@@ -1,0 +1,172 @@
+// breakpoint;
+//print("MOD4");
+// Module 4 - Device Manager -s
+
+// Handles Terminal I/O and Disk operations (Load and Store).
+
+// Function Number 	Function Name 	Arguments 	Return Value
+// DISK_STORE = 1 	Disk Store 	PID, Page Number, Block Number 	NIL
+// DISK_LOAD = 2 	Disk Load 	PID, Page Number, Block Number 	NIL
+// TERMINAL_WRITE = 3 	Terminal Write 	PID, Word 	NIL
+// TERMINAL_READ = 4 	Terminal Read 	PID, Address 	NIL
+
+alias functionNum R1;
+alias currentPID R2;
+
+////////////////////////////////////////////////////////////////////////////////
+// Disk Store - stores contents of page into the disk block. A valid PID as input is assumed.
+
+
+if (functionNum == 1) then
+   //print("DiskStore");
+	alias PageNum R3;
+	alias BlockNum R4;
+
+   //----------------------------
+
+	multipush(R1, R2, R3, R4);
+	R1 = 3;                       // R2 already as currentPID
+	call MOD_0;							// acquire_disk
+	multipop(R1, R2, R3, R4);
+
+   //------------------------------
+
+	[DISK_STATUS_TABLE + 1] = 1;			// Store bit
+   [DISK_STATUS_TABLE + 2] = PageNum;  // page number
+   [DISK_STATUS_TABLE + 3] = BlockNum; // block number
+
+   //------------------------------
+
+	store(PageNum,BlockNum);            // mem page --> disk block (store)
+
+   //------------------------------
+
+	[PROCESS_TABLE + (currentPID * 16) + 4] = WAIT_DISK;
+
+   //------------------------------
+
+	call MOD_5;
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Disk Load - Loads contents of disk block to page. A valid PID as input is assumed
+
+
+if (functionNum == 2) then
+
+	alias PageNum R3;
+	alias BlockNum R4;
+
+   //-----------------------------
+
+	multipush(R1, R2, R3, R4);
+	R1 = 3;                       // R2 already has currentPID
+	call MOD_0;							//acquire_disk
+	multipop(R1, R2, R3, R4);
+
+   //---------------------------
+
+	[DISK_STATUS_TABLE + 1] = 0;			// Load bit
+   [DISK_STATUS_TABLE + 2] = PageNum;  // page number
+   [DISK_STATUS_TABLE + 3] = BlockNum; // block number
+
+   //--------------------------
+
+	load(PageNum,BlockNum);             // disk block --> mem page (load)
+
+   //--------------------------
+
+	[PROCESS_TABLE + (currentPID * 16) + 4] = WAIT_DISK;
+
+   //-------------------------
+
+   multipush(R1, R2, R3, R4);
+	call MOD_5;
+   multipop(R1, R2, R3, R4);
+
+   //------------------------
+
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Terminal Write - Writes a word (from the Memory address provided) to the terminal. Assumes a valid PID is given.
+if (functionNum == 3) then
+
+	alias word R3;
+
+   //------------------------
+
+	multipush(R1, R2, R3);
+	R1 = 8;
+	R2 = [SYSTEM_STATUS_TABLE + 1]; // current PID
+	call MOD_0;						                        // Accquire Terminal
+	multipop(R1, R2, R3);
+
+   //-----------------------
+
+	print word;
+
+   //-----------------------
+
+	multipush(R1, R2, R3);
+	R1 = 9;							// Release Terminal
+	R2 = [SYSTEM_STATUS_TABLE + 1];
+	call MOD_0;                //save R0 if required
+	multipop(R1,R2,R3);
+
+   //----------------------
+
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Terminal Read - Reads a word from the terminal and stores it to the memory address provided. Assumes a valid PID is given.
+
+if (functionNum == 4) then
+
+	alias logicaladd R3;
+
+   //--------------------------
+
+	multipush(R1, R2, R3);
+	R1 = 8;
+	R2 = [SYSTEM_STATUS_TABLE + 1];     // Acquire Terminal
+	call MOD_0;
+	multipop(R1, R2, R3);
+
+   //-------------------------
+
+	read;
+
+   //------------------------
+
+	[PROCESS_TABLE + currentPID * 16 + 4] = WAIT_TERMINAL;
+
+   //-----------------------
+
+	multipush(R1, R2, R3);
+	call MOD_5;
+	multipop(R1, R2, R3);
+
+   //-----------------------
+
+	alias offset R4;
+	alias lpage R5;
+
+	offset = logicaladd % 512;
+	lpage = logicaladd / 512;
+
+	[([PTBR + 2*lpage])*512 + offset] = [PROCESS_TABLE + currentPID * 16 + 8];
+
+   //------------------------
+	return;
+
+endif;
+return;
+
+////////////////////////////////////////////////////////////////////////////////

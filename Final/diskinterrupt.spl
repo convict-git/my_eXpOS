@@ -1,0 +1,47 @@
+// # Disk interrupt handler -s
+// Description -
+// Hardware sends an interrupt on completion of a load/store operation.
+// This interrupt is handled by the Disk Interrupt Handler. The data structure updated is the Disk Status Table.
+
+/////////////////////////////////////////////////////////////////////////////////
+
+// ------------------------------------------------------ switch to kernel stack
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1;
+
+// -------------------------- backup the register context of the current process
+
+backup;
+
+// -------------- in DISK_STATUS_TABLE, set STATUS to 0 ( the disk is now free )
+
+[DISK_STATUS_TABLE] = 0;
+
+alias index R1;
+index = 1;
+
+// -------------- for all process with state WAIT_DISK, set their state to READY
+
+while (index < MAX_PROC_NUM) do
+
+	if([PROCESS_TABLE + index * 16 + 4] == WAIT_DISK) then            // if WAIT_DISK
+		[PROCESS_TABLE + index * 16 + 4] = READY;                      // set to READY
+	endif;
+
+	index = index + 1;
+endwhile;
+
+// -------------------------- restore the register context of the current process
+
+restore;
+
+// --------------------------------------- set SP to user SP (from process table)
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+
+// --------------------------------------------------------- return to user mode
+
+ireturn;
+
+/////////////////////////////////////////////////////////////////////////////////

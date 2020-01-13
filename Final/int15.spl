@@ -1,0 +1,150 @@
+// halt;                                           // FIXME
+////////////////////////////////////////////////////////////////////////////////
+//   Shutdown system call -s
+
+//   Arguments: None
+//
+//   Return Value: -1 on error or NIL
+//
+//   Description: The shut down system call is used to halt the system.
+//   It can be invoked only from shell of the root user.
+//
+//   -> terminates all the running processes,
+//   -> commits back the disk data
+//      (inode table, disk free list, root file, user table and dirty disk buffers)
+//   -> halts the system.
+
+////////////////////////////////////////////////////////////////////////////////
+// breakpoint;
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+
+alias userSP R0;
+userSP = SP;
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1;
+
+//-------------------------------
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 21;
+
+//-------------------------------
+// If current pid != shell's (pid of shell is 2) OR current user != root (root has userid 1) (word 3 of process table)
+
+// if ([SYSTEM_STATUS_TABLE + 1] != 1 || [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 3] != 1) then			// not shell, not root FIXME
+
+if ([SYSTEM_STATUS_TABLE + 1] != 1) then
+
+   // Address translation of userSP ----------------------
+
+	alias physicalAddrRetVal R1;
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+
+   // return -1 for error --------------------------------
+
+	[physicalAddrRetVal] = -1;                   // error
+
+   // set mode flag to 0 --------------------------------
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0; // out of system call
+
+   // set SP to user stack pointer & user mode ----------
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+	ireturn;
+
+endif;
+
+//---------------------------------
+
+multipush(R0, R1, R2);
+
+R1 = 5;
+R2 = [SYSTEM_STATUS_TABLE + 1];
+call MOD_1;									// kill all
+
+multipop(R0, R1, R2);
+
+//--------------------------------
+// writing dirty buffers back ------------------
+
+R1 = 0;
+while (R1 < 4) do
+	if ([BUFFER_TABLE + 4 * R1 + 1] == 1) then // if block is dirty
+
+		multipush(R0, R1, R2);
+		R2 = [SYSTEM_STATUS_TABLE + 1];        // pid
+		R3 = 71 + R1;                          // page number
+		R4 = [BUFFER_TABLE + 4 * R1 + 0];      // block number (stored in buffer table)
+		R1 = 1;                                // func num of disk_store=1
+		call MOD_4;
+		multipop(R0, R1, R2);
+
+	endif;
+	R1 = R1 + 1;
+endwhile;
+
+//--------------------------------------
+
+// Copy inode table, user table, disk free list, root file to disk
+
+//   MEMORY :-
+//   ----------------------------------------
+//   59 - 60 	Memory copy of Inode Table
+//            Memory copy of User Table
+//            Unallocated
+//   ----------------------------------------
+//   61 	   Memory copy of Disk Free List
+//   62 	   Memory copy of Root File
+//            Unallocated
+//   ----------------------------------------
+//
+//   DISK :-
+//   ---------------------------------------
+//   2 	      Disk Free List
+//   3 - 4 	Inode + User Table *
+//   5 	      Root File **
+//   ---------------------------------------
+
+multipush(R0, R1, R2, R3, R4);
+R1 = 1;                          // disk_store
+R2 = [SYSTEM_STATUS_TABLE + 1];  // pid
+R3 = 59;									// Inode + user
+R4 = 3;
+call MOD_4;
+multipop(R0, R1, R2, R3, R4);
+
+//--------------------------------------
+
+multipush(R0, R1, R2, R3, R4);
+R1 = 1;
+R2 = [SYSTEM_STATUS_TABLE + 1];
+R3 = 60;									// Inode + user
+R4 = 4;
+call MOD_4;
+multipop(R0, R1, R2, R3, R4);
+
+//--------------------------------------
+
+multipush(R0, R1, R2, R3, R4);
+R1 = 1;
+R2 = [SYSTEM_STATUS_TABLE + 1];
+R3 = 61;									// Diskfree list
+R4 = 2;
+call MOD_4;
+multipop(R0, R1, R2, R3, R4);
+
+//--------------------------------------
+
+multipush(R0, R1, R2, R3, R4);
+R1 = 1;
+R2 = [SYSTEM_STATUS_TABLE + 1];
+R3 = 62;									// Root file
+R4 = 5;
+call MOD_4;
+multipop(R0, R1, R2, R3, R4);
+
+//--------------------------------------
+halt;
+
+
+////////////////////////////////////////////////////////////////////////////////

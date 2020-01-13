@@ -1,0 +1,45 @@
+// # Console Interrupt handler -s [p]
+
+// Description - The process executing the operation is sleeping while the input is being read.
+
+// --> Once input data is read, the terminal device sends a hardware interrupt
+// --> wakes up processes that are blocked for input console.
+
+////////////////////////////////////////////////////////////////////////////////
+
+///------------------------ switch to kernel stack and backup context (voluntary system call from user)
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1;
+
+backup;
+
+///------------------------ set status field in TERMINAL_STATUS_TABLE to 0 (terminal free)
+[TERMINAL_STATUS_TABLE + 0] = 0;
+
+///------------------------ process with PID in Terminal status table has to read the data
+alias reqPID R1;
+reqPID = [TERMINAL_STATUS_TABLE + 1];
+
+//------- copy read input from P0 to input buffer (word 8) in process table of reqPID
+[PROCESS_TABLE + (reqPID * 16) + 8] = P0;
+
+
+// ---------------- call release_terminal (number 9) from resource_manager (module 0)
+multipush(R1);
+
+R2 = reqPID; // PID of the process which releases terminal
+R1 = 9;      // Function Number 9 in MOD 0 is # (Release Terminal)
+
+call MOD_0;  // # (Resource Manager)
+
+multipop(R1);
+
+// ---------------------------------------- restore reg context of current process
+restore;
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // restore userSP from UPTR
+
+ireturn; // shift to user mode
+
+////////////////////////////////////////////////////////////////////////////////

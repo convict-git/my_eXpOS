@@ -1,0 +1,171 @@
+// # Interrupt 6 - Read system call - p
+
+// Arguments : File Descriptor(Integer) and a Buffer (a String/Integer variable) into which a word is to be read from the file
+// ReturnValue : 0 (Success), -1	(File Descriptor given is invalid), -2	(File pointer has reached the end of file)
+
+// Description : The Read operation reads one word from the position pointed by the file pointer and stores it into the buffer.
+// After each read operation, the file pointer advances to the next word in the file.
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+breakpoint;
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 7; // set the MODE to 7
+
+alias userSP R1;
+alias ret R2;
+alias fileDescriptor R3;
+alias word R4;
+
+userSP = SP;
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = userSP;                  // save the user sp in UPTR
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1;              // initialize kernel stack
+
+fileDescriptor = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + (userSP - 4) % 512];    // first arg is filedescriptor
+word           = [[PTBR + 2 * ((userSP - 3) / 512)] * 512 + ((userSP - 3) % 512)]; // second arg is word pointer
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+if (fileDescriptor == -1) then
+
+   multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+   ///------------------------
+
+	R1 = 4;                         // call TERMINAL_READ from Device manager function 4
+	R2 = [SYSTEM_STATUS_TABLE + 1]; // PID of current process
+	R3 = word;                      // word to be read
+
+	call MOD_4;
+   ///------------------------
+   multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+
+	ret = 0;
+	goto exit;
+//////////////////////////////////////////////////////////////////////////////////////////////////
+else
+	if (fileDescriptor < 0 || fileDescriptor > 7) then // check if fileDescriptor is valid else ret -1
+		ret = -1;
+		goto exit;
+	endif;
+
+   //------------------------------------------------------------------------------------------------
+	alias perProcessTable R5; // get it from user page area last 16 words
+	perProcessTable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+
+   ///------------------------
+   // NOTE :
+   // (user page number + 1) * 512 - 16 words -> staring of perProcessTable (Resource)
+   // 16 words in perProcessTable (Resource) with 2 words per entry hence max 8 entries
+
+   //  fileDescriptor          -> local id what a process sees (SEMA ID or FILE ID)
+   //  2 * fileDescriptor      -> validation word (-1 Invalid, 0 File, 1 Semaphore)
+   //  2 * fileDescriptor + 1  -> global id (for file or sema)
+	if ([perProcessTable + 2 * fileDescriptor] != FILE) then // FILE is 0
+		ret = -1;
+		goto exit;
+	endif;
+
+   ///------------------------
+	alias fileTableIndex R6;
+	alias inodeTableIndex R7;
+
+	fileTableIndex = [perProcessTable + 2 * fileDescriptor + 1];
+
+   ///------------------------
+   // NOTE :
+   // there can be at most MAX_OPENFILE_NUM = 32 open files in the system at any time
+   // Every entry of the Open File Table is of 4 words :  inode_index (1) + open_instance_count (1) + lseek (1) + unused (1)
+	inodeTableIndex = [OPEN_FILE_TABLE + 4 * fileTableIndex];
+   ///------------------------
+
+   multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+
+	R1 = 4;
+	R2 = inodeTableIndex;
+	R3 = [SYSTEM_STATUS_TABLE + 1];
+
+	call MOD_0;										//acquire inode
+
+   multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+
+   ///------------------------ if acquiring inode fails return -1
+	if (R0 != 0) then
+		ret = -1;
+		goto exit;
+	endif;
+
+   ///------------------------ get lseek from OPEN_FILE_TABLE's 3rd entry for the corresponding global file id
+	alias lseek R8;
+	lseek = [OPEN_FILE_TABLE + 4 * fileTableIndex + 2];
+
+   ///------------------------
+	if ([OPEN_FILE_TABLE + 4 * fileTableIndex] == INODE_ROOT) then // INODE_ROOT is 0
+		if (lseek == 480) then                                      // ROOT FILE SIZE = 480, if reached then ret -2
+			ret = -2;
+			goto relInodeGoto;
+		endif;
+
+      ///------------------------ store the value present pointed by lseek in word
+      // word address is logical (sent by user) hence we need to do address translation
+		[([PTBR + 2 * (word / 512)]) * 512 + (word % 512)] = [ROOT_FILE + lseek];
+
+      ///------------------------ increment lseek in OPEN_FILE_TABLE
+		[OPEN_FILE_TABLE + 4 * fileTableIndex + 2] = [OPEN_FILE_TABLE + 4 * fileTableIndex + 2] + 1;
+
+		ret = 0; // return successful
+		goto relInodeGoto;
+
+   ///------------------------
+	else
+     ///------------------------
+     // NOTE :
+     // MAX_FILE_BLOCKS = 4 and, Each Inode table entry consists of 16 words
+     // FILE TYPE(1) + FILE NAME(1) + FILE SIZE(1) + USER ID(1) + PERMISSION(1) + Unused (3) + DATA BLOCK 1 to 4 (4 words each) + Unused (4 words)
+		if (lseek == [INODE_TABLE + 16 * inodeTableIndex + 2]) then // if lseek is equal to file size than return -2 (file read complete, EOF reached)
+			ret = -2;
+			goto relInodeGoto;
+		endif;
+
+     ///------------------------ Get the corresponding block number (for accessing DATABLOCK) for INODE_TABLE
+
+      alias dataBlockIndex R9;
+		dataBlockIndex = lseek / PAGE_SIZE;
+
+      multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+
+      R1 = 2;
+      R2 = [INODE_TABLE + 16 * inodeTableIndex + 8 + dataBlockIndex]; // +8 because datablocks starts from 8th word in INODE TABLE
+      R3 = lseek % 512;                                               // lseek offset
+      R4 = word;
+
+      call MOD_3; // call buffered_read(), function num. 2 from file manager Module
+
+      multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+
+     ///------------------------ increment the lseek in OPEN_FILE_TABLE
+		[OPEN_FILE_TABLE + 4 * fileTableIndex + 2] = [OPEN_FILE_TABLE + 4 * fileTableIndex + 2] + 1;
+
+		ret = 0; // successful return 0
+		goto relInodeGoto;
+	endif;
+
+   ///------------------------ Relase Inode
+	relInodeGoto:
+     multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+
+     R1 = 5;                         // function 5 release inode
+     R2 = inodeTableIndex;           // inode index
+     R3 = [SYSTEM_STATUS_TABLE + 1]; // curPID
+     call MOD_0;                     // release inode
+
+     multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+endif;
+
+///------------------------
+
+exit:
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = ret;                                   // store the ret value
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // restore user SP
+	[PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 1] * 16 + 9] = 0;     // reset MODE Flag
+   breakpoint;
+	ireturn;

@@ -1,0 +1,129 @@
+// # Exception Handler -p
+//
+// Arguments : None
+// ReturnValue : None
+// Description : If a process :
+// 1) generates an illegal instruction or an invalid address (outside its virtual address space)
+// 2) do a division by zero
+// 3) tries to write to a page which is read-only,
+// 4) causes other faulty conditions which are machine dependent, the machine will generate an exception.
+// The exception handler must terminate the process and invoke the context switch module to to schedule other processes.
+
+// The exception handler is also invoked when a page required by a process is not present in the memory.
+// This condition is known as a page fault. The eXpOS scheduler will never schedule a process if its stack page is not present in the memory.
+// Hence, a page fault can occur only when either,
+// a) one of the code pages of the process (logical pages 4 to 7) has to be loaded from the disk or
+// b) one of the heap pages has not been allocated (logical page 2 or 3). When a page fault exception occurs,
+// the exception handler routine checks if the page resides in the disk. If it does, it is loaded to the memory and the page table is updated.
+// Otherwise, a new page is allocated to the process by the exception handler.
+//
+//------------------------------------------------------------------------------------------------
+
+// NOTE : EIP (Exception IP): The logical IP value of the unprivileged mode instruction that caused the exception is stored in this register.
+// b) EPN (Exception Page Number): (case of a page fault exception). The logical page number that caused the page fault is stored in this register.
+// c) EC (Exception Cause): The EC register will indicate the cause of the exception – values are set as below.
+//    EC = 0 (Page Fault), EC = 1 (Illegal instruction), EC = 2 (Illegal Memory access), EC = 3 (Arithematic exception).
+// d) EMA (Exception memory address) : (case of illegal memory access)
+
+////////////////////////////////////////////////////////////////////////////////
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9]  = -1;           // set MODE flag -1 representing the process in exceptional handler
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;           // store SP in UPTR
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1; // Initialize kernel stack
+
+////////////////////////////////////////////////////////////////////////////////
+backup;          // backup the context of the process since this was an interrupt was triggered involuntary (hence process doesn't save its own contexts)
+multipush (EIP); // This is the logical IP where the exception was called, hence this instruction should be run again
+// there will be a context switch and other process to can have a raised exception, but we have EIP as one register hence push into stack
+
+////////////////////////////////////////////////////////////////////////////////
+///------------------------  If (the exception is not caused by a page fault or user stack is full (UPTR is Max allowed))
+if (EC != 0 || ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] == PTLR * 512 - 1)) then
+   if (EC != 0) then
+     print("PageFault");               // print cause of exception
+     print([SYSTEM_STATUS_TABLE + 1]); // print PID
+   else
+     print("StackFull");               // print cause of exception
+     print([SYSTEM_STATUS_TABLE + 1]); // print PID
+   endif;
+
+   ///------------------------ Terminate the process by calling exit process
+	R1 = 3;                         // Function number 3 in MOD 1 is # Exit Process
+	R2 = [SYSTEM_STATUS_TABLE + 1]; // PID
+	call MOD_1;                     // # (Process Manager)
+
+   ///------------------------ Invoke the scheduler
+	call MOD_5;                     // call # (Scheduler)
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+///------------------------ Exception is due to page fault
+
+// NOTE : EPN contains logical page where exception occured
+// 10 pages are allocated to any process
+// Shared Library (2) + Heap (2) + Code (4) + Stack (2)
+// Hence Page (4-7) contains Code section
+
+// NOTE : The Disk Map Table has 10 entries for a single process
+// When the memory pages of a process are swapped out into the disk, the corresponding disk block
+// numbers of those pages are stored in this table. It also stores block numbers of the code pages of the process.
+
+// The entry in the disk map table entry has the following format: (10 words)
+// Unused(1) + Unused(1) +	Heap 1 in disk(1)	+ Heap 2 in disk(1)	+ Code 1 in disk(1) + Code 2 in disk(1)
+// + Code 3 in disk(1) + Code 4 in disk(1) + Stack Page 1 in disk(1)	+ Stack Page 2 in disk(1)
+
+if (EPN == 4 || EPN == 5 || EPN == 6 || EPN == 7) then			// Code error
+   ///------------------------ if code page demand
+	print("Code");
+	print(EPN);
+
+	multipush(EPN);
+   ///------------------------ get block no. from diskmap table entry and call Get Code Page
+	R1 = 5;                                                       // Function number 5 in MOD 2 is # (Get Code Page)
+	R2 = [DISK_MAP_TABLE + [SYSTEM_STATUS_TABLE + 1] * 10 + EPN]; // Block number of the code page
+
+	call MOD_2;                                                   // # (Memory Manager)
+   ///------------------------ R0 contains the physical page number of Memory where single code page is loaded
+	multipop(EPN);
+
+	[PTBR + EPN * 2]     = R0;     // In the page table entry, set the Page Number field to the page number returned by get_code_page()
+	[PTBR + EPN * 2 + 1] = "1100"; // set reference and valid bit to 1, and write bit to 0 (since code page is read only)
+endif;
+if (EPN == 2 || EPN == 3) then
+   ///------------------------ else it's heap page demand
+   // Allocate 2 new memory pages for heap by calling the get_free_page() function in the Memory Manager module.
+   // NOTE : Initially NO heap pages are allocated, and once a heap page is demanded, both the heap pages are allocated
+
+   ///------------------------ get first heap page from get free page
+	R1 = 1;              // Function number 1 in MOD 2 is # (Get Free Page)
+	call MOD_2;          // # (Memory Manager )
+
+
+	[PTBR + 4] = R0;     // R0 contains the physical page number of Memory where single code page is loaded
+	[PTBR + 5] = "1110"; // since heap page is read and write, reference bit, valid bit and write bit all as 1
+
+   // /------------------------ get second heap page from get free page
+	R1 = 1;              // Function number 1 in MOD 2 is # (Get Free Page)
+	call MOD_2;          // # (Memory Manager )
+
+	[PTBR + 6] = R0;     // R0 contains the physical page number of Memory where single code page is loaded
+	[PTBR + 7] = "1110"; // since heap page is read and write, reference bit, valid bit and write bit all as 1
+
+   ///------------------------
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+multipop(EIP); // pop EIP
+restore;       // restore the context
+
+////////////////////////////////////////////////////////////////////////////////
+
+SP = [PROCESS_TABLE + ( [SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // restore the userSP
+SP = SP + 1;                                                   // Increment SP
+
+[[PTBR + 2 * (SP / 512)] * 512 + SP % 512] = EIP;              // and store EIP onto the location pointed to by SP. (This will be the next instruction to run in user mode)
+[PROCESS_TABLE + ( [SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;   // reset MODE to 0
+
+ireturn;                                                       // back to user mode
+////////////////////////////////////////////////////////////////////////////////

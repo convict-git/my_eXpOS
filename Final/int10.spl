@@ -1,0 +1,45 @@
+// Exit system call -s
+
+// Arguments: None
+// Return Value: None
+
+// Description:
+
+// Terminates the execution of the process which invoked it
+// Destroys its memory address space.
+
+// The calling application ceases to exist after the system call and hence the system call never returns.
+
+////////////////////////////////////////////////////////////////////////////////
+
+// ------------------------------- set mode flag to system call number (10 here)
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 10;
+
+// ------------------------------------------------------- switch to kernel stack
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1;
+
+// ---------------------------------------- call exit_process from process manager
+
+R1 = 3;                                     // exit process
+R2 = [SYSTEM_STATUS_TABLE + 1];             // pid
+call MOD_1;
+
+// --------------------------------------------------------------------------------
+// exit_process releases all the memory pages of the process
+// including the page holding kernel stack.
+
+// Still, as exit_process is non-blocking,
+// the kernel stack page will NOT be allocated to another process.
+
+// This makes it possible to make a final call from the process to the scheduler.
+
+// There is no return to
+// the process after the following scheduler invocation. */
+
+call MOD_5;
+
+////////////////////////////////////////////////////////////////////////////////

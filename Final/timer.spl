@@ -1,0 +1,81 @@
+// Timer Interrupt Handler -s
+// NOTE :- incomplete,  stage 27 left
+
+// Description -
+// The timer interrupt handler internally invokes the eXpOS scheduler module
+
+////////////////////////////////////////////////////////////////////////////////
+
+// ------------------------------------------------------- switch to kernel stack
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1;
+
+// ----------------------------------------backup register context of curr process
+
+backup;
+
+////////////////////////////////////////////////////////////////////////////////
+// FIXME
+// This code is relevant only when the Pager Module is implemented in Stage 27
+
+//  if ([SYSTEM_STATUS_TABLE + 1] != 0) then
+//  	if ([SYSTEM_STATUS_TABLE + 2] < MEM_LOW) then
+//  		R1 = 1;											//SWAP OUT
+//  		R2 = [SYSTEM_STATUS_TABLE + 1];
+//  		call MOD_6;
+//  	else
+//  		if ([SYSTEM_STATUS_TABLE + 2] > MEM_HIGH) then
+//  			R1 = 2;										//SWAP IN
+//  			R2 = [SYSTEM_STATUS_TABLE + 1];
+//  			call MOD_6;
+//  		endif;
+//  	endif;
+//  endif;
+//
+////////////////////////////////////////////////////////////////////////////////
+
+// -------------------------------------------- this process's state - READY now
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = READY;
+
+// ----------------------------------------- increase TICK field of each process
+// ------------------------------- TICK is the word 0 in each process table entry
+
+alias count R0;
+count = 0;
+
+while(count < MAX_PROC_NUM) do
+
+	if ([PROCESS_TABLE + 16*count + 4] != TERMINATED) then				// only for non terminated process
+
+		[PROCESS_TABLE + 16*count] = [PROCESS_TABLE + 16*count] + 1;   // increase TICK (word 0)
+
+	endif;
+
+	count = count + 1;
+endwhile;
+
+// -------------------------------------------------------------- call scheduler
+
+multipush(R0);
+call MOD_5;
+multipop(R0);
+
+// ------------------------------------- restore register context of new process
+
+restore;
+
+// ----------------------------------------- set SP to user SP of new process
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+
+// --------------------------------------------------------- mode flag to 0
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+
+// ---------------------------------------------------- return to user mode
+
+ireturn;
+
+////////////////////////////////////////////////////////////////////////////////

@@ -1,0 +1,313 @@
+// Module 2 - Memory Manager -s
+////////////////////////////////////////////////////////////////////////////////
+
+// Function Number 	   Function Name 	Arguments 	  Return Value
+// GET_FREE_PAGE = 1 	Get Free Page 	NIL 	        Free Page number
+// RELEASE_PAGE = 2 	   Release Page 	Page Number   NIL
+// GET_FREE_BLOCK = 3 	Get Free Block NIL 	        Free Block Number or -1
+// RELEASE_BLOCK = 4 	Release Block 	Block Number, NIL
+//                                     PID
+// GET_CODE_PAGE = 5 	Get Code Page 	Block Number  Page Number
+// GET_SWAP_BLOCK = 6 	Get Swap Block NIL 	        Block Number
+
+alias functionNum R1;
+
+////////////////////////////////////////////////////////////////////////////////
+// Get Free Page - Returns the page number of a free page.
+
+if (functionNum == 1) then
+   //print("GetFreePage");
+   // ----------------- Increase WAIT_MEM_COUNT in System status table (sst)
+   // -------------------- indicates number of processes waiting for memory
+
+	[SYSTEM_STATUS_TABLE + 3] = [SYSTEM_STATUS_TABLE + 3] + 1;
+
+   //-----------------------------------------------------------------------
+
+// 	if ([SYSTEM_STATUS_TABLE + 2] == 0) then
+// 		multipush(R1);
+// 		R1 = 1;
+// 		R2 = [SYSTEM_STATUS_TABLE + 1];
+// 		call MOD_6;                          // NOT IMPLEMENTED PAGER MOD YET
+// 		multipop(R1);
+// 	endif;
+
+   //----------------------------------------------------------------------
+   // --------------------------------- while MEM_FREE_COUNT (in sst) == 0
+   // ----------------------------------------------------- memory is full
+
+	while ([SYSTEM_STATUS_TABLE + 2] == 0) do
+
+      // ------------------------------- set state of process as WAIT_MEM
+
+		[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = WAIT_MEM;
+
+      // -------------------------------------------------- call scheduler
+
+		multipush(R1);
+		call MOD_5;                            // scheduler called
+		multipop(R1);
+
+      //-----------------------------------------------------------------
+	endwhile;
+
+   //-------------------------------------------------------------------
+   // ------------------------------ reached here means free page exists
+
+   // Reduce MEM_FREE_COUNT in sst ------------------------------------
+   // Reduce WAIT_MEM_COUNT in sst ------------------------------------
+
+	[SYSTEM_STATUS_TABLE + 2] = [SYSTEM_STATUS_TABLE + 2] - 1;           // MEM_FREE_COUNT
+	[SYSTEM_STATUS_TABLE + 3] = [SYSTEM_STATUS_TABLE + 3] - 1;           // WAIT_MEM_COUNT
+
+   // -----------------------------------------------------------------
+
+   // ------------------- find a free page for user prog from [76, 127]
+
+	alias counter R0;
+	counter = 76;
+
+	while (counter < 128) do
+
+		if ([MEMORY_FREE_LIST + counter] == 0) then     // free page found
+			[MEMORY_FREE_LIST + counter] = 1;            // not free anymore
+			return;                                      // page num already in R0
+		endif;
+		counter = counter + 1;
+
+	endwhile;
+
+   //-------------------------------------------------------------------
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Release Page - Decrements the entry corresponding to page in memory free list.
+
+if (functionNum == 2) then
+
+   //print("ReleasePage");
+	alias PageNum R2;
+
+   // memory free list entry for a page contains number of processes sharing that page
+   //---------------------------------------------------------------------------------
+
+	[MEMORY_FREE_LIST + PageNum] = [MEMORY_FREE_LIST + PageNum] - 1;        // reduce 1 for this page
+
+   //----------------------------------------------------------------------------------
+   //---------------- If this page shared by 0 processes, increase MEM_FREE_COUNT in sst
+
+	if ([MEMORY_FREE_LIST + PageNum] == 0) then
+		[SYSTEM_STATUS_TABLE + 2] = [SYSTEM_STATUS_TABLE + 2] + 1;
+	endif;
+
+   //-----------------------------------------------------------------------------------
+   // ----------------------------------- if process in WAIT_MEM, set its state to READY
+
+	alias counter R3;
+	counter = 1;
+
+	while (counter < MAX_PROC_NUM) do
+
+		if ([PROCESS_TABLE + (counter * 16) + 4] == WAIT_MEM) then
+			[PROCESS_TABLE + (counter * 16) + 4] = READY;
+		endif;
+
+		counter = counter + 1;
+	endwhile;
+
+   // ----------------------------------------------------------------------------------
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Get Free Block -
+// Returns :-
+//         the block number of a free disk block.
+//      OR  -1 if disk is full.
+
+if (functionNum == 3) then
+   //print("GetFreeBlock");
+	alias counter R0;
+
+   // ------------ loop through Disk Free List from DISK_FREE_AREA to DISK_SWAP_AREA - 1
+
+	counter = DISK_FREE_AREA;
+
+	while (counter < DISK_SWAP_AREA) do
+
+      // ------------------------------- search for free disk block (0 - Free ; 1 - Busy)
+
+		if ([DISK_FREE_LIST + counter] == 0) then
+
+         // ----------------------------------------------------------- mark as not free
+
+			[DISK_FREE_LIST + counter] = 1;
+			return;                                               // return the disk block
+
+         //----------------------------------------------------------------------------
+
+		endif;
+
+		counter = counter + 1;
+	endwhile;
+
+   //-----------------------------------------------------------------------------------
+
+	R0 = -1;                                        // if no free block found, return -1
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Release Block
+// Decrements the entry corresponding to the disk block in the disk free list.
+
+if (functionNum == 4) then
+
+   //print("ReleaseBlock");
+	alias BlockNum R2;
+	alias pid R3;
+
+   //-------------------- Set the Disk Free List entry corresponding to the block to 0.
+
+	[DISK_FREE_LIST + BlockNum] = 0;
+
+   // --------------------------------------------------------------------------------
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Get Code Page
+// Loads a single code page to memory
+// given the block number of the page in the disk. It takes the block number and PID as an argument.
+
+// PER PROCESS DISK MAP TABLE :-
+
+//  Unused 	Unused 	Heap 1 	Heap 2   Code 1   Code 2    Code 3    Code 4    Stack Page 1   Stack Page 2
+//                   in disk  in disk  in disk 	in disk   in disk   in disk   in disk        in disk
+
+
+if (functionNum == 5) then
+   //print("GetCodePage");
+	alias BlockNum R2;
+	alias counter R3;
+	alias index R4;
+
+   // ---------------------------- if code page already loaded by some process, increase count in MEM_FREE_LIST
+
+   // ----------------------------------- loop through code page entries in the disk map table of ALL PROCESSES
+
+	counter = 0;              //----- earlier (counter=3) that code page loaded from process 3 onwards - TODO - error
+
+	while (counter < 16) do
+
+      // -------------------------------------- code pages in per process disk map table are [4, 7] -- 4 pages
+
+		index = 4;
+
+		while (index < 8) do
+
+         // -------------------------------- if block num in disk map table matches the block num to be loaded
+
+         // --------------------------------------------------------- each entry in disk map table has 10 words
+
+			if ([DISK_MAP_TABLE + counter*10 + index] == BlockNum) then
+
+            // ------------------ AND the entry for that block in the page table of that process should be valid
+            // ------------------------------- 8, 9, 10, 11, 12, 13, 14, 15 entries in page table for code pages
+
+				if ([PAGE_TABLE_BASE + counter*20 + index*2 + 1] == "0100" || [PAGE_TABLE_BASE + counter*20 + index*2 + 1] == "1100") then
+
+					R0 = [PAGE_TABLE_BASE + counter*20 + index*2];                 // the physical page num where this block is already
+
+					[MEMORY_FREE_LIST + R0] = [MEMORY_FREE_LIST + R0] + 1;         // increase Memory free list entry for page
+
+					return;                                                        // returned physical page num
+
+				endif;
+
+            // -------------------------------------------------------------------------------------------------
+
+			endif;
+			index = index + 1;
+
+		endwhile;
+		counter = counter + 1;
+
+	endwhile;
+
+   // -----------------------------------------------------------------------------------------------------------
+
+   // -------------------------------------------------------------- page not loaded already ; call GET_FREE_PAGE
+
+	multipush(R1, R2, R3, R4);
+
+	R1 = 1;                                                           // function num for get free page
+	call MOD_2;                                                       // free page in R0
+
+	multipop(R1, R2, R3, R4);
+
+   //------------------------------------------------------------------------------------------------------------
+
+   // for DISK_LOAD func in Device Manager (module - 4)
+   // DISK_LOAD = 2 	Disk Load 	PID, Page Number, Block Number 	NIL
+
+	multipush(R0, R1, R2, R3, R4);
+
+	R1 = 2;                                            // disk load
+	R4 = R2;                                           // block number
+	R2 = [SYSTEM_STATUS_TABLE + 1];                    // pid
+	R3 = R0;                                           // page number
+	call MOD_4;                                        // no return value
+
+	multipop(R0, R1, R2, R3, R4);                      // free page still in R0
+
+   //-------------------------------------------------------------------------------------------------------------
+
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Get Swap Block -
+// Returns the block number of a free disk block in the swap area.
+
+
+// ------------------------------------------- loop through DISK_FREE_LIST from DISK_SWAP_AREA to DISK_SIZE - 1
+
+if (functionNum == 6) then			//Get Swap block
+   //print("GetSwapBlock");
+	alias counter R0;
+	counter = DISK_SWAP_AREA;
+
+	while (counter < DISK_SIZE) do				// DISK_SIZE = 512
+
+      // ------------------------------------------------------- if free entry found, set disk free list entry as 1
+
+		if ([DISK_FREE_LIST + counter] == 0) then
+
+			[DISK_FREE_LIST + counter] = 1;           // set as 1
+
+			return;                                   // block number in R0 already
+
+		endif;
+
+      //------------------------------------------------------------------------------------------------------------
+
+		counter = counter + 1;
+
+	endwhile;
+
+   // ------------------------------------------------------------------------------- no swap block found
+
+	R0 = -1;
+
+   // --------------------------------------------------------------------------------------------------
+
+	return;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////

@@ -1,0 +1,277 @@
+// Interrupt - 4 -s       has Create and Delete system calls
+
+////////////////////////////////////////////////////////////////////////////////
+// Both calls search inode table so it's better to combine
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9]  = 1; // set MODE to 1 initially (to disable timer interrupts)
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+
+alias userSP R1;
+userSP = SP;
+
+alias ret R2;
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1;
+
+alias SyscallNumber R3;
+SyscallNumber = [[PTBR + 2 * ((userSP - 5)/ 512)] * 512 + ((userSP - 5) % 512)];
+
+////////////////// file name (string) is arg1 for both calls ---------------------
+
+alias filename R4;
+filename = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + ((userSP - 4) % 512)];
+
+////////////////// finding file in inode table -----------------------------------
+
+alias fileindex R5;
+alias flag R6;
+alias freeentry R7;
+alias foundindex R9;
+
+flag = 0;               // not found flag
+fileindex = 0;				// inode table (page 59) INODE_TABLE
+freeentry = -1;
+foundindex = -1;        // want to find index in inode table s.t. its file name == filename
+
+while (fileindex < MAX_FILE_NUM) do
+	if ([INODE_TABLE + fileindex * 16 + 1] == -1 && freeentry == -1) then   // get a free entry in the inode table
+		freeentry = fileindex;
+	endif;
+	if ([INODE_TABLE + fileindex * 16 + 1] == filename) then                // found the file
+		flag = 1;
+      foundindex = fileindex;
+	endif;
+	fileindex = fileindex + 1;
+endwhile;
+
+// Return address ----------------------------------------------------------------
+//////////////// retAdd = [PTBR + 2 * ((userSP - 1) / 512)]*512 + ((userSP - 1) % 512);
+
+////////////////////////////////////////////////////////////////////////////////
+// Create System call
+// The Create operation takes as input a filename.
+// If the file already exists, then the system call returns 0 (success).
+// Otherwise,
+//    -> creates an empty file by that name,
+//    -> sets the file type to DATA, file size to 0,
+//    -> userid to that of the process (from the process table) and
+//    -> permission as given in the input in the Inode Table.
+// also creates a root entry for that file.
+
+// Arguments: Filename (String), Permission (0 - exclusive/1 - open-access)
+
+// Return Value:
+// 0 	   Success/File already exists
+// -1 	No free inode table entry
+
+if (SyscallNumber == 1) then
+   // breakpoint;
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 1; // set MODE to create
+	alias permission R8;
+	permission = [[PTBR + 2 * ((userSP - 3)/ 512)] * 512 + ((userSP - 3) % 512)];
+
+   //----------------------------
+
+	if (flag == 1) then		         // file present in disk
+		ret = 0;
+		goto lb2;
+	endif;
+
+	if (freeentry == -1) then
+		ret = -1;					      // # max of files reached
+		goto lb2;
+	endif;
+
+   // a file's inode entry & root file entry have same index ----------------------
+
+	R11 = INODE_TABLE + freeentry * 16;             // inode table :- 16 words/entry
+	R12 = ROOT_FILE + freeentry * 8;                // root file   :- 8  words/entry
+
+   // INODE TABLE ENTRIES ---------------------
+   // file type, name, size -------------------
+
+	[R11 + 0] = DATA;
+	[R11 + 1] = filename;
+	[R11 + 2] = 0;
+	[R11 + 3] = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 3];      // user id of process
+	[R11 + 4] = permission;
+
+   // 0 blocks allocated to file --------------
+
+	[R11 + 8] = -1;
+	[R11 + 9] = -1;
+	[R11 + 10] = -1;
+	[R11 + 11] = -1;
+
+   // ROOT FILE ENTRIES ----------------------
+   // file name, size, type, username, permissn    [ all entries basically ]
+
+	[R12 + 0] = filename;
+	[R12 + 1] = 0;
+	[R12 + 2] = DATA;
+	[R12 + 3] = [USER_TABLE + 2*[R11 + 3]];         // TODO - this could be an error (user name) FIXME
+	[R12 + 4] = permission;
+
+   // Success --------------------------------
+
+	ret = 0;				//Return value
+	goto lb2;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Delete System Call
+
+// Arguments: Filename (String)
+
+//  Return Value:
+//  0 	Success/File does not exist
+//  -1 	Permission denied
+//  -2 	File is open
+
+//  The Delete operation takes as input a filename and deletes it.
+//  It returns an error if
+//    -> any instance of the file is open in the system or
+//    -> if the file is not a DATA file.
+//  Delete command fails also if the file to be deleted does not belong to the current user
+//  and it has exclusive permissions.
+//  Otherwise,
+//    -> it deletes the root entry for the file name,
+//    -> invalidates the Inode Table entry for the file,
+//    -> releases the disk blocks allocated to the file and returns 0.
+
+if (SyscallNumber == 4) then				//delete
+
+   // set mode flag to syscall num -----------------------
+   // breakpoint;
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 4;
+
+   // if file not in inode -------------------------------
+
+	if (flag == 0) then
+		print("File not found");
+		ret = 0;
+		goto lb2;
+	endif;
+
+   //-----------------------------------------------------
+
+	R11 = INODE_TABLE + foundindex * 16;
+	R12 = ROOT_FILE + foundindex * 8;
+
+	if ([R11 + 0] != DATA) then                         // if not data file
+		ret = -1;
+		goto lb2;
+	endif;
+
+   //----------------------------------------------------
+   // if file exclusive
+   // if current user != root (uid 1) AND not owner of the file, error!
+
+	if ([R11 + 4] == EXCLUSIVE) then			// if exclusive
+		if ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 3] != 1 && [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 3] != [R11 + 3]) then					//root abstract here correct it later  TODO
+			ret = -1;
+			goto lb2;
+		endif;
+	endif;
+
+   //----------------------------------------------------
+   // Acquire inode
+
+	multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12);
+	R1 = 4;
+	R2 = foundindex;                       // inode index
+	R3 = [SYSTEM_STATUS_TABLE + 1];        // pid
+	call MOD_0;
+	multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12);
+
+   //---------------------------------------------------
+
+	if(R0 != -1) then								// lock accquired
+      // if file open, cannot be deleted --------------
+		if ([FILE_STATUS_TABLE + foundindex * 4 + 1] != -1) then     // file open now
+			print("In Use");
+			ret = -2;
+			goto lb1;
+		else
+         // for each disk block allocated, if in buffer & dirty, set dirty = 0
+         // call release_block to free the block
+			alias counter R15;
+			alias iter R13;
+			counter = 8;
+
+			while (counter < 12) do          // checking data block from inode table
+
+				if ([R11 + counter] != -1) then
+					iter = 0;
+
+               // if block in buffer AND dirty bit set --------------------
+
+					while (iter < 4) do        // checking the 4 buffer pages
+						if ([BUFFER_TABLE + iter * 4 + 0] == [R11 + counter] && [BUFFER_TABLE + iter * 4 + 1] == 1) then
+							[BUFFER_TABLE + iter * 4 + 1] = 0;			//reset the dirty bit
+						endif;
+
+						iter = iter + 1;
+					endwhile;
+
+               //-------------------------------------------------------------
+               // free the disk block
+
+					multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R15);
+					R1 = 4;											// release block
+					R2 = [R11 + counter];
+					R3 = [SYSTEM_STATUS_TABLE + 1];
+					call MOD_2;
+					multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R15);
+
+				endif;
+
+				[R11 + counter] = -1;         // disk block freed, mark in inode table
+				counter = counter + 1;
+			endwhile;
+
+         //--------------------------------------------------------------------
+
+			[R11 + 1] = -1;			// invalidate inode entry
+			[R11 + 2] = -1;
+
+			[R12 + 0] = -1;			// invalidate root entry
+			[R12 + 1] = -1;
+         [R12 + 2] = -1;         // TODO added later
+
+			print("Deleted");
+			ret = 0;                // success
+			goto lb1;
+		endif;
+
+		lb1:
+         // Release_inode ---------------------------------------------------
+
+		   multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R15);
+			R1 = 5;											// release inode
+			R2 = foundindex;                        // inode index
+			R3 = [SYSTEM_STATUS_TABLE + 1];			// pid
+			call MOD_0;
+		   multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R15);
+
+         //------------------------------------------------------------------
+	endif;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// Common :- mode flag to 0, set return value, user mode -----------------------
+
+lb2:
+   // physical add where to return val------------------------------------------
+
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = ret;
+
+   // user mode ----------------------------------------------------------------
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+	ireturn;
+
+
+////////////////////////////////////////////////////////////////////////////////

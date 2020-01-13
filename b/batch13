@@ -1,0 +1,9 @@
+load --os ../spl_progs/stage13_16/stage13/os_startup_13.xsm
+load --module 7 ../spl_progs/stage13_16/stage13/boot_13.xsm
+load --init ../spl_progs/stage7_12/stage12/print_100.xsm
+load --idle ../spl_progs/stage7_12/stage12/idle12.xsm
+load --int=timer ../spl_progs/stage7_12/stage12/timer_12.xsm
+load --int=10 ../spl_progs/haltprog.xsm
+load --int=7 ../spl_progs/stage7_12/stage10/int7.xsm
+load --library ../expl/library.lib
+load --exhandler ../spl_progs/haltprog.xsm

@@ -1,0 +1,19 @@
+load --int=9 ../spl_progs/stage13_16/stage18/int9_18.xsm
+load --exec ../spl_progs/stage13_16/stage14/odd_init.xsm
+load --module 1 ../spl_progs/stage13_16/stage18/mod1_17.xsm
+load --module 2 ../spl_progs/stage13_16/stage18/mod2_17.xsm
+load --init ../spl_progs/stage13_16/stage17/shell.xsm
+load --os ../spl_progs/stage13_16/stage16/os_startup_16.xsm
+load --module 7 ../spl_progs/stage13_16/stage18/boot_18.xsm
+load --module 5 ../spl_progs/stage13_16/stage14/switch_14.xsm
+load --module 4 ../spl_progs/stage13_16/stage18/mod4_18.xsm
+load --module 0 ../spl_progs/stage13_16/stage18/mod0_18.xsm
+load --idle ../spl_progs/stage7_12/stage12/idle12.xsm
+load --int=timer ../spl_progs/stage13_16/stage15/timer_14.xsm
+load --int=console ../spl_progs/stage13_16/stage18/console.xsm
+load --int=disk ../spl_progs/stage13_16/stage18/disk.xsm
+load --int=10 ../spl_progs/stage13_16/stage14/int10_14.xsm
+load --int=7 ../spl_progs/stage13_16/stage15/int7_15.xsm
+load --int=6 ../spl_progs/stage13_16/stage16/int6_16.xsm
+load --library ../expl/library.lib
+load --exhandler ../spl_progs/haltprog.xsm

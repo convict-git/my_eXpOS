@@ -1,0 +1,25 @@
+load --exec ../spl_progs/stage20/odd.xsm
+load --exec ../spl_progs/stage20/even.xsm
+load --exec ../spl_progs/stage13_16/stage14/prime1.xsm
+load --init ../spl_progs/stage21/assn_1_21.xsm
+load --os ../spl_progs/stage13_16/stage16/os_startup_16.xsm
+load --module 0 ../spl_progs/stage13_16/stage19/mod0_18.xsm
+load --module 1 ../spl_progs/stage21/mod1_21.xsm
+load --module 2 ../spl_progs/stage20/mod2.xsm
+load --module 4 ../spl_progs/stage20/mod4.xsm
+load --module 5 ../spl_progs/stage20/mod5.xsm
+load --module 7 ../spl_progs/stage21/boot_21.xsm
+load --module 7 ../spl_progs/stage21/.temp/mod7.xsm
+load --idle ../spl_progs/stage7_12/stage12/idle12.xsm
+load --int=timer ../spl_progs/stage13_16/stage19/timer_14.xsm
+load --int=console ../spl_progs/stage13_16/stage19/console.xsm
+load --int=disk ../spl_progs/stage13_16/stage19/disk.xsm
+load --int=6 ../spl_progs/stage13_16/stage16/int6_16.xsm
+load --int=7 ../spl_progs/stage13_16/stage15/int7_15.xsm
+load --int=8 ../spl_progs/stage20/int8_20.xsm
+load --int=9 ../spl_progs/stage13_16/stage19/int9_19.xsm
+load --int=10 ../spl_progs/stage20/int10_20.xsm
+load --int=11 ../spl_progs/stage21/int11_21.xsm
+load --int=15 ../spl_progs/stage21/int15_21.xsm
+load --library ../expl/library.lib
+load --exhandler ../spl_progs/stage13_16/stage19/exception.xsm

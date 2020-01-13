@@ -1,0 +1,179 @@
+// # Interrupt 13 - Semget and Semrelease -p
+
+////////////////////////////////////////////////////////////////////////////////
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP; // store the user SP in UPTR
+
+alias userSP R1;
+alias PhysicalPageNum R2;
+alias offset R3;
+alias CallNumAdd R4;
+alias SyscallNumber R5;
+////////////////////////////////////////////////////////////////////////////////
+
+// System call number extracted from user stack
+userSP          = SP;
+PhysicalPageNum = [PTBR + 2 * ((userSP - 5)/ 512)];
+offset          = (userSP - 5) % 512;
+CallNumAdd      = (PhysicalPageNum * 512) + offset;
+SyscallNumber   = [CallNumAdd];
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Switch to kernel stack
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// # Semget SysCall (function number 17)
+
+// Arguments : None
+// ReturnValue :
+// SEMID (Integer) | Success, returns a semaphore descriptor(SEMID)
+// -1              | Process has reached its limit of resources
+// -2              | Number of semaphores has reached its maximum
+
+// Description : This system call is used to obtain a binary semaphore. eXpOS has a fixed number of semaphores.
+// The semaphores of a process are shared with it's child processes.
+// Data Structures updated are Per Process Resource Table and Semaphore table.
+
+///------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 17) then				//Semget system call
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 17; // set MODE_FLAG for function 17
+   ///------------------------
+	alias perprocesstable R6;
+	alias counter R7;
+	alias flag R8;
+
+	R0 = -1; // initial return value
+
+   ///------------------------
+	perprocesstable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+   // (user page number + 1) * 512 - 16 words -> staring of perprocesstable
+   // 16 words in perprocesstable with 2 words per entry hence max 8 entries
+
+   ///------------------------ finding a fresh entry for new somophore
+	flag = -1;
+	counter = 0;
+	while(counter < 16) do								// find a free entry in perprocesstable among 16 entries
+		if([perprocesstable + counter] == -1) then
+			flag = 1;
+			break;
+		endif;
+		counter = counter + 2;
+	endwhile;
+
+   ///------------------------
+
+	if (flag == 1) then // if found a entry for new somophore
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8);
+
+      ///------------------------acquire semaphore from resource manager (MOD_0) function 6
+		R1 = 6;
+		R2 = [SYSTEM_STATUS_TABLE + 1]; // current PID
+		call MOD_0;
+      ///------------------------
+
+		multipop(R1, R2, R3, R4, R5, R6, R7, R8);
+	endif;
+
+	if (R0 != -1) then                       // if return from resource manager succesfull
+		[perprocesstable + counter]     = 1;      // Semaphore
+		[perprocesstable + counter + 1] = R0; // storing the entry
+      R0                              = counter / 2;                     // return value (index hence counter / 2)
+   else
+     if (flag == -1) then                // valid entry found in perprocess table but LIMIT OF RESOURCE REACHED
+        R0 = -2;
+     else
+        R0 = -1;                              // no valid entry found in perprocess table
+     endif;
+   endif;
+   ///------------------------
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0; // reset the MODE flag
+
+   ///------------------------ Return the Per-process Resource Table entry index. (SEMAPHORE DESCRIPTOR)
+
+
+	PhysicalPageNum = [PTBR + 2 * ((userSP - 1)/ 512)];           // return address
+	offset          = (userSP - 1) % 512;
+	CallNumAdd      = (PhysicalPageNum * 512) + offset;
+	[CallNumAdd]    = R0;                                            // return value
+
+   ///------------------------
+   SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // restore the userSP
+   ireturn;
+endif;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// # Semrelease SysCall (function number 18)
+
+// Arguments : Semaphore Descriptor (Integer)
+// ReturnValue :
+// 0  | Success,
+// -1 | Semaphore Descriptor is invalid
+
+// Description : This system call is used to release a semaphore descriptor held by the process.
+// Data Structures updated are Per Process Resource Table and Semaphore table.
+// The mode flag in the Process Table has to be set to Kernel mode when the process enters the system call
+// and reset before exiting from the system call.
+///------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 18) then				//Semrelease
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 18; // set MODE_FLAG to function 18
+
+   ///------------------------  fetch the sema ID
+
+	alias perprocesstable R6;
+	alias sdescriptor R7;
+	PhysicalPageNum = [PTBR + 2 * ((userSP - 4)/ 512)]; // system call number on userSP - 4
+	offset          = (userSP - 4) % 512;
+	CallNumAdd      = (PhysicalPageNum * 512) + offset;
+
+	sdescriptor     = [CallNumAdd]; // sema ID
+
+   ///------------------------ get the perprocesstable base for the current process
+
+	perprocesstable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+
+   // NOTE :
+   // (user page number + 1) * 512 - 16 words -> staring of perprocesstable (Resource)
+   // 16 words in perprocesstable (Resource) with 2 words per entry hence max 8 entries
+
+   ///------------------------ call release terminal on the sema ID got
+
+   //  sdesciptor          -> local id what a process sees (SEMA ID or FILE ID)
+   //  2 * sdescriptor     -> validation word (-1 Invalid, 0 File, 1 Semaphore)
+   //  2 * sdescriptor + 1 -> global id (for file or sema)
+
+	if (sdescriptor >= 0 && sdescriptor < 8 && [perprocesstable + 2 * sdescriptor] == SEMAPHORE) then
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8);
+      ///------------------------ invoke release_semaphore from resource manager (MOD_0) function no. 7
+
+		R1 = 7;
+		R2 = [perprocesstable + 2 * sdescriptor + 1]; // send sema ID to release_semaphore
+		R3 = [SYSTEM_STATUS_TABLE + 1];
+		call MOD_0;
+
+      ///------------------------
+      multipop(R1, R2, R3, R4, R5, R6, R7, R8);
+
+		[perprocesstable + 2*sdescriptor]     = -1;    // invalidate
+		[perprocesstable + 2*sdescriptor + 1] = 0;
+		R0                                    = 0;                                    // success
+	else
+		R0 = -1;                                   // sema descriptor is invalid
+	endif;
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0; // reset the MODE Flag
+	PhysicalPageNum = [PTBR + 2 * ((userSP - 1)/ 512)];         // return address
+	offset          = (userSP - 1) % 512;
+	CallNumAdd      = (PhysicalPageNum * 512) + offset;
+
+	[CallNumAdd]    = R0;                                          // return value
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+   SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // reset SP from UPTR
+   ireturn;                                                      // return back to user mode the same process which called the interrupt
+endif;

@@ -1,0 +1,13 @@
+vmap <S-t> :Tabularize /\/\/<CR>
+vmap <S-c> :s/^/\/\/ /g<CR>
+set tabstop=3
+set shiftwidth=2
+set expandtab
+
+if has("autocmd")
+   augroup templates_"
+      au BufRead,BufNewFile *.expl set filetype=c
+      au BufRead,BufNewFile *.spl set filetype=spl
+   augroup END
+endif
+

@@ -1,0 +1,351 @@
+// # File Manager (Module 3) -s
+//  This module contains the functions that manages files.
+
+// # Important Note:
+// All functions in this module expect that the # inode is locked before they are called
+
+// Function Number 	   Function Name 	   Arguments 	                                 Return Value
+// ---------------------------------------------------------------------------------------------------
+// BUFFERED_WRITE = 1 	Buffered Write 	Disk Block Number, Offset, Word 	            NIL
+// BUFFERED_READ = 2 	Buffered Read 	   Disk Block Number, Offset, Memory Address 	NIL
+// OPEN = 3 	         Open 	            File Name 	                                 File Table Index, -1 or -2
+// CLOSE = 4 	         Close 	         File Table Index 	                           NIL
+
+//////////////////////////////////////////////////////////////////////////////////////////
+// # Buffered Write -
+// Arguments - disk block number , offset , word               [ to write 'word' at buffer (of disk block) at 'offset' ]
+// # Return value - NIL
+// Description -
+// The disk page provided is loaded to the corresponding buffer. (disk block num % 4)
+// The word provided is written into the offset position of the buffer.
+
+/////////////////////////////////////////////////////////////////////////////////////////
+// # Buffered Read -
+// Arguments - disk block number , offset , memory address     [ to save read contents at this memory address ]
+// # Return value - NIL
+// Description -
+// The disk page provided is loaded to the corresponding buffer.
+// The word present at the offset position of the buffer is copied to the Memory address provided as input.
+
+// NOTE - Physical memory address must be provided.
+/////////////////////////////////////////////////////////////////////////////////////////
+
+alias functionNum R1;
+
+if (functionNum == 1 || functionNum == 2) then				// buffer read and buffer write
+
+   // ---------------------------- NOTE - common code for both BUFFERED WRITE and BUFFERED READ
+
+	alias diskblock R2;                 // argument 1 - disk block number
+	alias offset R3;                    // argument 2 - offset
+	alias word R4;                      // argument 3 - word (Buff WRITE) / memory address (Buff READ)
+
+   // ---------------------------------------------------- identify the buffer - (disk block num) % 4
+
+	alias bufferpage R5;
+	bufferpage = diskblock % 4;                              // can be 0, 1, 2 or 3
+
+   // --------------------- acquire the buffer [ call ACQUIRE_BUFFER in resource manager - module 1 ]
+
+	multipush(R1, R2, R3, R4, R5);
+
+	R1 = 1;                                            // acquire buffer
+	R2 = R5;                                           // buffer number
+	R3 = [SYSTEM_STATUS_TABLE + 1];                    // pid
+	call MOD_0;							                     // nil returned
+
+	multipop(R1, R2, R3, R4, R5);
+
+   // ----------------------------- Entry of a buffer table contains -----------------------------------------
+   // Disk block number currently stored in buffer              -> (-1) if buffer unallocated
+   // flag indicating whether block Dirty (modified) or not     -> Dirty block needs to be written back to disk
+   // PID of process that locked the buffer page                -> (-1) if no proc locked the buffer
+   // --------------------------------------------------------------------------------------------------------
+   // BLOCK NUMBER   |  	DIRTY BIT    | 	LOCKING PID  | 	Unused             [ an entry of buffer table ]
+
+
+   // ---------------------------------- if buffer table contains ANOTHER BLOCK, (block num - word 0 - NOT diskblock)
+
+	if ([BUFFER_TABLE + 4 * bufferpage] != diskblock) then
+
+      // -------------------------- if the buffer contents are dirty (check word 1 of buffer table entry)
+		if ([BUFFER_TABLE + 4 * bufferpage + 1] == 1) then          // dirty
+
+         // write back contents of buffer to disk [ call disk_store func in Device Manager module - mod 4 ]
+
+			multipush(R1, R2, R3, R4, R5);
+
+			R1 = 1;                                         // disk store
+			R2 = [SYSTEM_STATUS_TABLE + 1];                 // pid
+			R3 = 71 + bufferpage;                           // physical page number  [ Buffer tables are at 71,72,73,74 pages ]
+			R4 = [BUFFER_TABLE + 4 * bufferpage + 0];       // block number [ word 0 of buffer table entry contains curr block ]
+			call MOD_4;
+
+			multipop(R1, R2, R3, R4, R5);
+
+         // ------------------------------------------------------- mark buffer as clean ; dirty - (word 1) = 0
+			[BUFFER_TABLE + 4 * bufferpage + 1] = 0;          // FIXME // NOTE - write does NOT do this step - harmless though
+
+		endif;
+
+         // load the new disk block 'diskblock' into memory [ call disk_load function in device manager (mod 4) ]
+
+         multipush(R1, R2, R3, R4, R5);
+
+         R1 = 2;                                                     // disk_load
+         R4 = diskblock;                                             // disk block  ( arg 3 )
+         R2 = [SYSTEM_STATUS_TABLE + 1];                             // pid         ( arg 2 )
+         R3 = 71 + bufferpage;                                       // page num    ( arg 1 )
+         call MOD_4;
+
+         multipop(R1, R2, R3, R4, R5);
+
+         // ------------------------------------------------- set the new disk block in the buffer table (word 0)
+		   [BUFFER_TABLE + 4 * bufferpage + 0] = diskblock;
+
+	endif;
+
+   // NOTE - Diversion here -------------------------------------------------------------------------------------
+
+	if (functionNum == 2) then                            // BUFFERED READ
+
+      // ------------------ copy content at offset location (in buffer page) to physical address given as input
+      // FIXME - physical address must be provided.
+      // LINK :  http://exposnitc.github.io/os_modules/Module_3.html
+
+      [word] = [(71 + bufferpage) * 512 + offset];
+		// [([PTBR + 2*(word/512)])*512 + (word%512)] = [(71 + bufferpage) * 512 + offset];
+
+	else                                                  // BUFFERED WRITE
+      // ------------------------------------------ write contents of word into buffer page (at location offset)
+		[(71 + bufferpage) * 512 + offset] = word;
+
+      // --------------------------------------------------------------------- mark the buffer as dirty (word 1)
+		[BUFFER_TABLE + 4 * bufferpage + 1] = 1;
+
+      // NOTE -  word 0 (disk block) of open file table already set (line 104)
+
+	endif;
+
+   // ------------------------- release the buffer [ call release buffer function -- resource manager (mod 0) ]
+
+	multipush(R1,  R2,  R3,  R4,  R5);
+
+	R1 = 2;                                   // release buffer
+	R2 = R5;                                  // buffer number
+	R3 = [SYSTEM_STATUS_TABLE + 1];           // pid
+	call MOD_0;
+
+	multipop(R1,  R2,  R3,  R4,  R5);
+
+	return;                                   // both return NIL
+endif;
+
+//////////////////////////////////////////////////////////////////////////////////////////
+// # Open
+// Arguments - File name (string)
+// # Return value -
+//                   file table index / -1 / -2
+// Description - Locates the file in the inode table and makes an entry in the Open File Table.
+// Returns the Open File Table index or an error code if file does not exist or the table is full.
+// On a successfull open, the file status table entry of the file is incremented.
+
+// NOTE - call this function ONLY WHEN per-process resource table of process has a free entry
+
+//////////////////////////////////////////////////////////////////////////////////////////
+
+if (functionNum == 3) then				// Open
+
+	alias filename R2;               // String
+	alias fileindex R3;
+	alias flag R4;
+
+	flag = 0;
+	fileindex = 0;				// MAX_FILE_NUM = 60 (max entries in inode table)
+
+  // ----------------------------------------------- search inode table for file name (word 1)
+
+	while (fileindex < MAX_FILE_NUM) do
+		if ([INODE_TABLE + 16 * fileindex + 1] == filename) then             // got filename
+
+         // --------------------------------------- only DATA and ROOT FILE can be opened
+         // ---------------------------------------------------------- if EXEC, return -1
+
+			if ([INODE_TABLE + 16 * fileindex] != EXEC) then            // found finally
+				flag = 1;
+				break;
+			endif;
+		endif;
+		fileindex = fileindex + 1;
+	endwhile;
+
+   // ---------------------------------- if flag != 1, either file not found OR file EXEC
+   // ------------------------------------------------------------------------- return -1
+
+	if (flag != 1) then
+		R0 = -1;
+		return;
+	endif;
+
+   // ---------------------------- call acquire_inode from Resource manager module (mod 0)
+
+	multipush(R1, R2, R3, R4);
+
+	R1 = 4;                                // acquire inode
+	R2 = fileindex;                        // inode index
+	R3 = [SYSTEM_STATUS_TABLE + 1];        // pid
+	call MOD_0;										// 0 or -1
+
+	multipop(R1, R2, R3, R4);
+
+   // ---------------------------------------------- if locking fails (R0 == -1), return -1
+
+	if (R0 != 0) then                      // then R0 = -1 , return -1
+		return;
+	endif;
+
+   // ----------------------------------------------- find a free entry in open file table
+
+	alias counter R5;
+	flag = 0;
+	counter = 0;
+
+   // --------------------------------- free entry indicated by INODE INDEX == -1 (word 0)
+
+	while (counter < MAX_OPENFILE_NUM) do
+		if ([OPEN_FILE_TABLE + 4 * counter] == -1) then       // found free entry
+			flag = 1;
+			break;
+		endif;
+		counter = counter + 1;
+	endwhile;
+
+   // -------------------------- NOTE - counter (R5) has the open file table index for this file
+
+
+   // if flag != 1 ; no free entries in Open File table (max num of open files reached in system)
+
+	if (flag != 1) then
+
+      // ---------------------- call release_inode from resource manager (mod 0)
+		multipush(R1, R2, R3, R4, R5);
+
+		R1 = 5;                                      // Release inode
+		R2 = fileindex;                              // inode index
+		R3 = [SYSTEM_STATUS_TABLE + 1];              // pid
+		call MOD_0;							               // R0 has 0 / -1
+
+		multipop(R1, R2, R3, R4, R5);
+
+      // --------------------------------------------------------------------------- inode freed
+      // --------------------------------------- return -2 (max num of open files in OS reached)
+
+		R0 = -2;
+		return;
+
+	endif;
+
+   // ------------------------------------- reached here means free entry found in Open File table
+
+   // ----------------------------------- if file name is "root" , set inode index to INODE_INDEX
+
+	if (filename == "root") then
+		[OPEN_FILE_TABLE + 4 * counter] = INODE_ROOT;
+
+	else
+      // in file status table -
+      // if File Open Count (word 1) == -1 [ invalid earlier ] , set it to 1 (valid now)
+      // if file open count != -1 [ already valid ], increment the file open count now
+
+      // fileindex is index of file in INODE TABLE (which MUST be same as in FILE STATUS TABLE)
+
+		if ([FILE_STATUS_TABLE + 4 * fileindex + 1] == -1) then           // earlier invalid, now valid
+			[FILE_STATUS_TABLE + 4 * fileindex + 1] = 1;
+
+		else                                                              // valid before too, incr by 1
+			[FILE_STATUS_TABLE + 4 * fileindex + 1] = [FILE_STATUS_TABLE + 4 * fileindex + 1] + 1;
+		endif;
+
+      // -------------------- set Inode index entry (word 0) in Open file table entry for this file
+		[OPEN_FILE_TABLE + 4 * counter] = fileindex;
+
+	endif;
+
+   // ---------------------------------------------------------- set OPEN INSTANCE COUNT (word 1) to 1
+   // ------------------------------------------------------------------------ set LSEEK (word 2) to 0
+
+	[OPEN_FILE_TABLE + 4 * counter + 1] = 1;
+	[OPEN_FILE_TABLE + 4 * counter + 2] = 0;
+
+   // ----------------------------------------------------- call release_inode to free the inode table
+	multipush(R1, R2, R3, R4, R5);
+
+	R1 = 5;                             // Release inode
+	R2 = fileindex;                     // inode index
+	R3 = [SYSTEM_STATUS_TABLE + 1];     // pid
+	call MOD_0;				               // R0 == 0 / -1
+
+	multipop(R1, R2, R3, R4, R5);
+
+   // ----------------------------------------------------------------- return open file table index
+	R0 = counter;
+	return;
+
+endif;
+
+/////////////////////////////////////////////////////////////////////////////////
+// # Close (fn number 4)
+// Arguments - File table index
+// # Return value - NIL
+// Description - Closes the open instance of a file. Assumes a valid Open File Table index is given as input.
+
+/////////////////////////////////////////////////////////////////////////////////
+
+if (functionNum == 4) then				// Close
+
+	alias filetableindex R2;         // Argument 1 (the only argument)
+	alias inodeindex R3;
+
+   // --------------------------- find index of inode table entry from open file table (word 0)
+
+	inodeindex = [OPEN_FILE_TABLE + 4 * filetableindex + 0];
+
+   // --------------------------- decrease the OPEN INSTANCE COUNT (word 1) in open file table
+
+	[OPEN_FILE_TABLE + 4 * filetableindex + 1] = [OPEN_FILE_TABLE + 4 * filetableindex + 1] - 1;
+
+   // ----------------------------------------------------- if OPEN INSTANCE COUNT becomes 0
+
+	if ([OPEN_FILE_TABLE + 4 * filetableindex + 1] == 0) then
+      // --------------------------------------- invalidate all entries of open file table
+
+		[OPEN_FILE_TABLE + 4 * filetableindex + 0] = -1;
+		[OPEN_FILE_TABLE + 4 * filetableindex + 1] = -1;
+		[OPEN_FILE_TABLE + 4 * filetableindex + 2] = -1;
+
+      // ------ if file is NOT ROOT, decrement file open count in File (Inode) Status table
+
+		if ([OPEN_FILE_TABLE + 4 * filetableindex] != INODE_ROOT) then
+         // ------------------------------------- open file table's word 0 has inode index
+
+			alias counter R4;
+			counter = [OPEN_FILE_TABLE + 4 * filetableindex + 0];
+
+         // ---------------------- file open count present in FILE STATUS TABLE (word 1)
+         // --------------------------------------------------------------- decrement it
+         // -------------- index of file in inode table and file status table MUST MATCH
+
+			[FILE_STATUS_TABLE + 4 * counter + 1] = [FILE_STATUS_TABLE + 4 * counter + 1] - 1;
+
+         // if file open count in file status table becomes 0, set it to -1 (invalidate)
+
+			if ([FILE_STATUS_TABLE + 4 * counter + 1] == 0) then
+				[FILE_STATUS_TABLE + 4 * counter + 1] = -1;              // invalidated
+			endif;
+
+		endif;
+
+	endif;
+
+	return;
+endif;

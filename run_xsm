@@ -1,0 +1,101 @@
+#! /bin/bash
+# _______________________________________________________________________
+#|            DO WHAT THE F*CK YOU WANT TO PUBLIC LICENSE                |
+#|                     Version 1, September 2019                         |
+#|                                                                       |
+#|Copyright (C) 2019 Priyanshu Shrivastav <111701022@smail.iitpkd.ac.in> |
+#|                                                                       |
+#|  Everyone is permitted to copy and distribute verbatim or modified    |
+#|  copies of this license document, and changing it is allowed as long  |
+#|  as the NAME is CHANGED.                                              |
+#|                                                                       |
+#|             DO WHAT THE F*CK YOU WANT TO PUBLIC LICENSE               |
+#|                                                                       |
+#|   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION :   |
+#|            0. You just DO WHAT THE F*CK YOU WANT TO.                  |
+#|_______________________________________________________________________|
+
+# script by Priyanshu Shrivastav
+clear && clear
+echo -e "\e[1m\e[33mThis script was written by Priyanshu Shrivastav (https://github.com/convict-git/my_eXpOS)\e[0m \n"
+
+cur_dir=${PWD##*/}
+expected_dir="os_finale"
+
+if [ "$cur_dir" = "$expected_dir" ] ;
+then
+   if [ "$1" == "-c" ]; then
+      echo -e "\e[39m\e[1m********************************************************************************\e[0m\n"
+      echo -e "\e[33m\e[1mCompiling all spl files...\e[0m\n"
+
+      spl=$(find . \-name "*$2*.spl" | xargs ls -rt)
+
+      cd spl
+      for spl_file in $spl;
+      do
+         ./spl .$spl_file > err 2>> err
+         file_name=${spl_file##*/}
+         if [ \-s err ];
+         then
+            echo -e  "\e[1m\e[31m$file_name ... \t \t (failed)\e[0m\e[31m"
+            cat err
+            echo -e  "\e[0m"
+         else
+            echo -e  "$file_name ... \t \t \e[32m(ok) \e[0m"
+         fi
+         rm -rf err
+      done
+
+      echo -e  "\e[39m\e[1m********************************************************************************\e[0m\n"
+      cd ..
+      echo -e  "\e[33m\e[1mCompiling all expl files...\e[0m\n"
+
+      expl=$(find . \-name "*$2*.expl" | xargs ls -rt)
+
+      cd expl
+      for expl_file in $expl;
+      do
+         ./expl .$expl_file > err 2>> err
+         file_name=${expl_file##*/}
+         if [ \-s err ];
+         then
+            echo -e  "\e[1m\e[31m$file_name ... \t \t (failed)\e[0m\e[31m"
+            cat err
+            echo -e  "\e[0m"
+         else
+            echo -e  "$file_name ... \t \t \e[32m(ok) \e[0m"
+         fi
+         rm -rf err
+      done
+
+      echo -e  ""
+      rm \-rf err
+      cd ../xfs\-interface
+   else
+      cd xfs\-interface
+   fi
+
+   echo -e  "\e[39m\e[1m********************************************************************************\e[0m\n"
+
+   echo -e  "\e[33m\e[1mOpening xfs interface ... Please load the neccessary files\e[0m"
+   echo -e  "\e[33m\e[1m(eg. load --exec <filename> OR run batch15) \e[0m\n"
+   echo -e  "\e[33m\e[1m(Do NOT forget to 'exit') \e[0m\n"
+   ./xfs\-interface
+
+   echo -e  "\e[39m\e[1m********************************************************************************\e[0m\n"
+
+   echo -e "\e[33m\e[1mEnter flags for xsm: (eg. --timer 10 --debug)\e[0m"
+   read xsm_flags
+
+   echo -e  "\n\e[39mFlags used for xsm [\e[1m\e[33m $xsm_flags\e[0m ] ...\n"
+
+   read \-p "Please [Enter] to run xsm simulator with the above flag(s) ... "
+   echo -e  "\e[39m\e[1m********************************************************************************\n"
+   cd ../xsm
+   ./xsm $xsm_flags
+   echo -e  "\n\e[32mCompleted \e[0m";
+else
+   echo -e "You are in wrong directory! This executable is supposed to be in \e[1m myexpos\e[0m ...";
+   echo -e "\e[31m\e[1mExiting...\n\e[0m";
+fi
+

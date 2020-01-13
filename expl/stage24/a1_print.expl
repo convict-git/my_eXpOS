@@ -1,0 +1,31 @@
+int main ()
+{
+  decl
+      string filename;
+      int temp, filedescp;
+      int word;
+  enddecl
+  begin
+      temp = exposcall("Write", -2, "Name ");
+      read(filename);
+      filedescp = exposcall("Open", filename);
+      if (filedescp == -1) then
+        temp = exposcall("Write", -2, "Not found");
+      else 
+        if (temp == -2) then
+          temp = exposcall("Write", -2, "SysLimit");
+        else 
+          if (temp == -3) then
+            temp = exposcall("Write", -2, "ProcLimit");
+          else // true logic
+            temp = exposcall("Read", filedescp, word);
+            while(temp != -2) do
+               temp = exposcall("Write", -2, word);
+               temp = exposcall("Read", filedescp, word);
+            endwhile;
+          endif;
+        endif;
+      endif;
+      return 0;
+  end
+}

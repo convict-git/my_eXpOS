@@ -1,0 +1,351 @@
+// breakpoint;
+// # Module 0 - Resource Manager -p
+//
+// Description : This module is responsible for allocating and releasing the different resources.
+// Note that the Terminal and Disk devices are freed by the corresponding interrupt handlers.
+//
+//--------------------------------------------------------------------------------------------------------
+//#Function Number	    |   Function Name   |        Arguments	        |    ReturnValue               |
+//--------------------------------------------------------------------------------------------------------
+// ACQUIRE_BUFFER    = 1 | Acquire Buffer    | Buffer Number, PID         | NIL                          |
+// RELEASE_BUFFER    = 2 | Release Buffer    | Buffer Number, PID         | 0 or -1                      |
+// ACQUIRE_DISK      = 3 | Acquire Disk*     | PID                        | NIL                          |
+// ACQUIRE_INODE     = 4 | Acquire Inode     | Inodeindex, PID            | 0 or -1                      |
+// RELEASE_INODE     = 5 | Release Inode     | Inodeindex, PID            | 0 or -1                      |
+// ACQUIRE_SEMAPHORE = 6 | Acquire Semaphore | PID                        | Semaphore Table Index or -1  |
+// RELEASE_SEMAPHORE = 7 | Release Semaphore | Semaphore Table Index, PID | 0 or -1                      |
+// ACQUIRE_TERMINAL  = 8 | Acquire Terminal  | PID                        | NIL                          |
+// RELEASE_TERMINAL  = 9 | Release Terminal  | PID                        | 0 or -1                      |
+//--------------------------------------------------------------------------------------------------------
+
+////////////////////////////////////////////////////////////////////////////////
+
+alias functionNum R1;
+alias currentPID R2;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Acquire Disk . Function Number 3
+
+// Description : Locks the disk device. Assumes that a valid PID is given as input.
+// CalledBy : BufRead and BufWrite functions in the File Manager and the exception handler for swap-in.
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 3) then // acquire Disk
+   ///------------------------ busy wait while disk is busy
+
+	while ([DISK_STATUS_TABLE] == 1) do                     // check the status of disk from disk status table
+		[PROCESS_TABLE + (currentPID * 16) + 4] = WAIT_DISK; // set the current pid's STATUS as WAIT_DISK
+		multipush(R1, R2);
+      ///------------------------
+
+		call MOD_5;                                          // call # scheduler
+
+      ///------------------------
+		multipop(R1, R2);
+	endwhile;
+
+   ///------------------------ busy wait ends now disk is available
+	[DISK_STATUS_TABLE]     = 1;          // set disk status as acquired
+	[DISK_STATUS_TABLE + 4] = currentPID; // set current pid as this will be using the disk
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Acquire Semaphore - Function Number 6
+
+// Description : Acquires a semaphore and returns it's semaphore number. Assumes a valid PID is given as input. Returns -1 upon failure.
+// CalledBy : the Semget system call.
+
+// NOTE :
+// * There can be at most MAX_SEM_COUNT = 32 semaphores used in the system at any time.
+//   in SEMAPHORE_TABLE each entry is of [4 words] - LOCKING PID (1) + PROCESS COUNT (1) + UNUSED (2)
+// * locking pid is set to -1 if the semaphore is not locked by any processes
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 6) then //acquire Semaphore
+	alias counter R3;
+	alias flag R0;
+	flag    = -1;
+	counter = 0;
+
+   ///------------------------
+	while (counter < MAX_SEM_COUNT) do
+		if([SEMAPHORE_TABLE + counter * 4 + 1] == 0) then // new semaphore is required hence process count should be zero
+			flag                                = counter;
+			[SEMAPHORE_TABLE + counter * 4]     = -1;      // initial semaphore isn't locked by any process
+			[SEMAPHORE_TABLE + counter * 4 + 1] = 1;       // acquiring
+			break;
+		endif;
+		counter = counter + 1;
+	endwhile;
+   ///------------------------
+	return;				//flag will be returned
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Release Semaphore - Function Number 7
+
+// Description : Releases a semaphore. Assumes a valid PID and semaphore table index are given as input.
+// CalledBy : the Semrelease and exit system call.
+
+// NOTE :
+// * There can be at most MAX_SEM_COUNT = 32 semaphores used in the system at any time.
+//   in SEMAPHORE_TABLE each entry is of [4 words] - LOCKING PID (1) + PROCESS COUNT (1) + UNUSED (2)
+// * locking pid is set to -1 if the semaphore is not locked by any processes
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 7) then						//release Semaphore
+	alias sindex R2;
+	alias pid R3;
+
+   ///------------------------ check if the locking PID is the current PID
+	if ([SEMAPHORE_TABLE + sindex * 4] == pid) then
+		[SEMAPHORE_TABLE + sindex * 4] = -1;  // unlock the semaphore before releasing
+		alias counter R4;
+		counter = 1;
+
+      ///------------------------ wake up the all processes that were blocked by this semaphore
+		while (counter < MAX_PROC_NUM) do
+			if([PROCESS_TABLE + (counter * 16) + 4] == WAIT_SEMAPHORE && [PROCESS_TABLE + (counter * 16) + 5] == sindex) then
+				[PROCESS_TABLE + (counter * 16) + 4] = READY;    // process STATUS is a 2 tuple
+				[PROCESS_TABLE + (counter * 16) + 5] = 0;
+			endif;
+			counter = counter + 1;
+		endwhile;
+      ///------------------------
+	endif;
+
+   ///------------------------ decrement the process count
+	[SEMAPHORE_TABLE + sindex * 4 + 1] = [SEMAPHORE_TABLE + sindex * 4 + 1] - 1;
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Acquire Terminal - Function Number 8
+
+// Description : Locks the Terminal device. Assumes a valid PID is given as input.
+// CalledBy : the Terminal Read and Terimnal Write functions of the Device Manager Module.
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 8) then
+	alias currentPID R2;
+
+   ///------------------------ busy wait while terminal is free
+	while ([TERMINAL_STATUS_TABLE] == 1) do
+		[PROCESS_TABLE + currentPID * 16 + 4] = WAIT_TERMINAL;
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10);
+      ///------------------------ call scheduler
+
+		call MOD_5;                // call # scheduler
+
+      ///------------------------
+		multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10);
+	endwhile;
+   ///------------------------
+
+	[TERMINAL_STATUS_TABLE]     = 1;          // acquire terminal by locking it
+	[TERMINAL_STATUS_TABLE + 1] = currentPID; // set the pid using terminal as current pid
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Release Terminal - Function Number 9
+
+// Description : Frees the Terminal device. Assumes a valid PID is given as input.
+// CalledBy : the Terimnal Write function in the Device Manager Module.
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 9) then
+   ///------------------------ chech if locking pid is same as current pid
+	alias currentPID R2;
+	alias ret R0;
+
+	if (currentPID != [TERMINAL_STATUS_TABLE + 1]) then // unsuccessful
+		ret = -1;
+		return;
+	endif;
+
+   ///------------------------ Release terminal
+	[TERMINAL_STATUS_TABLE]     = 0;     // Unlock terminal
+	[TERMINAL_STATUS_TABLE + 1] = 0; // set locking pid as 0
+
+   ///------------------------
+	alias counter R3;
+	counter = 1;
+
+	while(counter < MAX_PROC_NUM) do
+      ///------------------------ set ready all the process which were waiting for terminal
+		if([PROCESS_TABLE + counter * 16 + 4] == WAIT_TERMINAL) then
+			[PROCESS_TABLE + counter * 16 + 4] = READY;
+		endif;
+      ///------------------------
+		counter = counter + 1;
+	endwhile;
+   ///------------------------
+	ret = 0; // successful
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Acquire Buffer - Function Number 1
+
+// Description : Acquire the buffer corresponding to buffer number given as input.
+// Assumes a valid PID and a valid buffer number are given.
+// CalledBy : BufRead and BufWrite functions in the File Manager.
+
+// NOTE :
+// MAX_BUFFER = 4. Each buffer is identified by its index in the buffer table.
+// Each entry in Buffer (4 word) - Block No.(1) + Dirty Bit(1) + Locking pid(1) + unused(1)
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 1) then 				//acquire buffer
+	alias buffernumber R2;
+	alias currentPID R3;
+
+   ///------------------------ busy wait while the demanded buffer is locked
+	while ([BUFFER_TABLE + 4 * buffernumber + 2] != -1) do
+		[PROCESS_TABLE + (currentPID * 16) + 4] = WAIT_BUFFER; // process STATE 2-tuple
+		[PROCESS_TABLE + (currentPID * 16) + 5] = buffernumber;
+
+      ///------------------------ call the scheduler
+		multipush(R1,R2,R3);
+
+		call MOD_5;                 // call #scheduler
+
+		multipop(R1,R2,R3);
+      ///------------------------
+	endwhile;
+   ///------------------------
+
+	[BUFFER_TABLE + 4 * buffernumber + 2] = currentPID; // set the locking PID as cur PID
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Release Buffer - Function Number 2
+
+// Description : Release the buffer corresponding to buffer number given as input. Assumes a valid PID and a valid buffer number are given.
+// CalledBy : BufRead and BufWrite functions in the File Manager.
+
+// NOTE :
+// MAX_BUFFER = 4. Each buffer is identified by its index in the buffer table.
+// Each entry in Buffer (4 word) - Block No.(1) + Dirty Bit(1) + Locking pid(1) + unused(1)
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 2) then 				//release buffer
+   ///------------------------ check if the locking pid is same as current PID or not
+	alias buffernumber R2;
+	alias currentPID R3;
+	if ([BUFFER_TABLE + 4 * buffernumber + 2] != currentPID) then
+		R0 = -1;
+		return;
+	endif;
+   ///------------------------ free the lock on buffer
+	[BUFFER_TABLE + 4 * buffernumber + 2] = -1;
+
+   ///------------------------ set ready all the proc waiting for this buffer
+	alias counter R4;
+	counter = 1;
+	while (counter < MAX_PROC_NUM) do
+		if ([PROCESS_TABLE + (counter * 16) + 4] == WAIT_BUFFER && [PROCESS_TABLE + (counter * 16) + 5] == buffernumber) then
+			[PROCESS_TABLE + (counter * 16) + 4] = READY;
+			[PROCESS_TABLE + (counter * 16) + 5] = 0;
+		endif;
+		counter = counter + 1;
+	endwhile;
+   ///------------------------
+
+	R0 = 0;
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Acquire Inode - Function Number 4
+
+// Description : Locks the Inode entry corresponding to the inodeindex given as input. Assumes a valid PID and a valid inode index are given.
+// CalledBy : Delete, Read, Write and Seek system calls.
+
+// NOTE :
+// For File (inode) status table :
+// MAX_FILE_NUM = 60 entries.
+// For each file, the index of its entry in the inode table must match with the index of its entry in the file status table .
+// Each entry - locking pid (1) + file open count (1) + unused (2)
+
+// For Inode table :
+// Each Inode table entry consists of 16 words. A Free inode entry is denoted by -1 in the FILENAME field
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 4) then						//acquire inode
+   // print("AcqInode");
+	alias inodeindex R2;
+	alias currentPID R3;
+
+   ///------------------------  busy wait while the inode is locked
+	while ([FILE_STATUS_TABLE + 4 * inodeindex] != -1) do
+		[PROCESS_TABLE + (currentPID * 16) + 4] = WAIT_FILE; // process STATUS 2-tuple
+		[PROCESS_TABLE + (currentPID * 16) + 5] = inodeindex;
+
+      ///------------------------ call the scheduler
+		multipush(R1,R2,R3);
+
+		call MOD_5;                 // call #scheduler
+
+		multipop(R1,R2,R3);
+      ///------------------------
+	endwhile;
+
+   ///------------------------ check if the file is not already deleted
+   // A Free inode entry is denoted by -1 in the FILENAME field
+	if ([INODE_TABLE + 16 * inodeindex + 1] == -1) then
+		R0 = -1;
+		return;
+	endif;
+   ///------------------------ set the locking pid as current PID
+	[FILE_STATUS_TABLE + 4 * inodeindex] = currentPID;
+	R0 = 0;
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Relase Inode - Function Number 5
+
+// Description : Frees the lock of the inode entry corresponding to the inodeindex given as input. Assumes a valid PID and a valid inode index are given.
+// CalledBy : Read, Write and Seek system calls.
+
+// NOTE :
+// MAX_FILE_NUM = 60 entries.
+// For each file, the index of its entry in the inode table must match with the index of its entry in the file status table .
+// Each entry - locking pid (1) + file open count (1) + unused (2)
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 5) then						//release inode
+   // print("RelInode");
+	alias inodeindex R2;
+	alias currentPID R3;
+
+   ///------------------------ if locking pid is not same as current pid
+	if (currentPID != [FILE_STATUS_TABLE + 4 * inodeindex]) then
+		R0 = -1;
+		return;
+	endif;
+
+   ///------------------------ unlock the inode table index
+	[FILE_STATUS_TABLE + 4 * inodeindex] = -1;
+
+	alias counter R4;
+	counter = 1;
+   ///------------------------ set ready all the proceses waiting for this inode table index
+
+	while (counter < MAX_PROC_NUM) do
+		if([PROCESS_TABLE + (counter * 16) + 4] == WAIT_FILE && [PROCESS_TABLE + (counter * 16) + 5] == inodeindex) then
+			[PROCESS_TABLE + (counter * 16) + 4] = READY; // process STATUS 2-tuple
+			[PROCESS_TABLE + (counter * 16) + 5] = 0;
+		endif;
+		counter = counter + 1;
+	endwhile;
+   ///------------------------
+	R0 = 0;
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////

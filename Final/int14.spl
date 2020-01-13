@@ -1,0 +1,163 @@
+// # Interrupt 14 - SemLock and SemUnLock -p
+
+////////////////////////////////////////////////////////////////////////////////
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP; // save the userSP in UPTR
+
+////////////////////////////////////////////////////////////////////////////////
+alias userSP R1;
+userSP = SP;
+alias ret R2;
+ret = 0;
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1; // initialize and switch to kernel stack
+alias SyscallNumber R3;
+
+SyscallNumber = [[PTBR + 2 * ((userSP - 5)/ 512)] * 512 + (userSP - 5) % 512]; // fetch the system call num
+
+////////////////////////////////////////////////////////////////////////////////
+// # SemLock SysCall - function Number 19
+
+// Arguments: Semaphore Descriptor (Integer)
+// ReturnValue :| 0| Success or the semaphore is already locked by the current process
+//              |-1| Semaphore Descriptor is invalid
+
+// Description : This system call is used to lock the semaphore. If the semaphore is already locked by some other process,
+// then the calling process goes to sleep and wakes up only when the semaphore is unlocked.
+// Otherwise, it locks the semaphore and continues execution. Data Structures updated are Process Table and Semaphore table.
+
+   // NOTE :
+   //  sdesciptor          -> local id what a process sees (SEMA ID or FILE ID)
+   //  2 * sdescriptor     -> validation word (-1 Invalid, 0 File, 1 Semaphore)
+   //  2 * sdescriptor + 1 -> global id (for file or sema)
+
+   // * There can be at most MAX_SEM_COUNT = 32 semaphores used in the system at any time.
+   //   in SEMAPHORE_TABLE each entry is of [4 words] - LOCKING PID (1) + PROCESS COUNT (1) + UNUSED (2)
+   // * locking pid is set to -1 if the semaphore is not locked by any processes
+
+///------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 19) then				//SemLock
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 19; // change the MODE of cur process as 19
+
+   ///------------------------ fetch the sdesc
+	alias sdescriptor R4;
+	alias perprocesstable R5;
+	sdescriptor     = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + (userSP - 4) % 512];
+	perprocesstable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+   // (user page number + 1) * 512 - 16 words -> staring of perprocesstable
+   // 16 words in perprocesstable with 2 words per entry hence max 8 entries
+   ///------------------------
+
+
+	if (sdescriptor >= 0 && sdescriptor < 8 && [perprocesstable + 2 * sdescriptor] == 1) then // checks is sdesc is valid
+      ///------------------------ busy wait while semaphore is locked by another process
+		while ([SEMAPHORE_TABLE + 4 * [perprocesstable + 2*sdescriptor + 1]] != [SYSTEM_STATUS_TABLE + 1] && [SEMAPHORE_TABLE + 4 * [perprocesstable + 2*sdescriptor + 1]] != -1) do
+
+         ///------------------------ Remember process STATUS is a 2 tuple
+			[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = WAIT_SEMAPHORE;                        // set current pid's status as WAIT_SEMAPHORE
+			[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 5] = [perprocesstable + 2*sdescriptor + 1]; // global SEMA ID that this process waits on
+
+         multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10);
+         ///------------------------ call the scheduler
+
+			call MOD_5;
+
+         ///------------------------
+         multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10);
+      endwhile;
+
+		[SEMAPHORE_TABLE + 4 * [perprocesstable + 2*sdescriptor + 1]] = [SYSTEM_STATUS_TABLE + 1]; // set the locking pid of the semaphore as cur pid
+		ret = 0;                                                                                   // return success message
+	else
+		ret = -1;                                                                                  // return failure
+	endif;
+
+   ///------------------------
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0; // reset the MODE of current process
+
+   ///------------------------ set the return value on user stack
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal   = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = ret;
+
+   ///------------------------ restore user sp
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+	ireturn; // return to the user mode
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # SemUnLock SysCall - function Number 20
+
+// Arguments : Semaphore Descriptor (Integer)
+// ReturnValue :
+// 0	Success
+// -1	Semaphore Descriptor is invalid
+// -2	Semaphore was not locked by the calling process
+
+// Description : This system call is used to unlock a semaphore that was previously locked by the calling process.
+// It wakes up all the processes which went to sleep trying to lock the semaphore while the semaphore was locked by the calling process.
+// Data Structures updated are Process Table and Semaphore table.
+
+
+   // NOTE :
+   //  sdesciptor          -> local id what a process sees (SEMA ID or FILE ID)
+   //  2 * sdescriptor     -> validation word (-1 Invalid, 0 File, 1 Semaphore)
+   //  2 * sdescriptor + 1 -> global id (for file or sema)
+
+   // * There can be at most MAX_SEM_COUNT = 32 semaphores used in the system at any time.
+   //   in SEMAPHORE_TABLE each entry is of [4 words] - LOCKING PID (1) + PROCESS COUNT (1) + UNUSED (2)
+   // * locking pid is set to -1 if the semaphore is not locked by any processes
+
+//------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 20) then				//SemUnLock
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 20; // change the MODE to 20
+
+   ///------------------------ fetch the sdesc
+	alias sdescriptor R4;
+	alias perprocesstable R5;
+	sdescriptor     = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + (userSP - 4) % 512];
+	perprocesstable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+   ///------------------------
+
+	if (sdescriptor >= 0 && sdescriptor < 8 && [perprocesstable + 2*sdescriptor] == 1) then // checks is sdesc is valid
+      ///------------------------
+		if ([SEMAPHORE_TABLE + 4 * [perprocesstable + 2*sdescriptor + 1]] != -1) then
+			if ([SEMAPHORE_TABLE + 4 * [perprocesstable + 2*sdescriptor + 1]] != [SYSTEM_STATUS_TABLE + 1]) then // semaphore locked by another process
+				ret = -2;
+			else
+				[SEMAPHORE_TABLE + 4 * [perprocesstable + 2*sdescriptor + 1]] = -1; // locking pid set to -1 hence semaphore unlocked
+				alias counter R8;
+				counter = 1;
+
+            ///------------------------ wake up the all processes that were blocked by this semaphore
+				while (counter < MAX_PROC_NUM) do
+               ///------------------------ if the counter process is waiting for the current semaphore then set it to ready
+					if([PROCESS_TABLE + (counter * 16) + 4] == WAIT_SEMAPHORE && [PROCESS_TABLE + (counter * 16) + 5] == [perprocesstable + 2*sdescriptor + 1]) then
+						[PROCESS_TABLE + (counter * 16) + 4] = READY;
+						[PROCESS_TABLE + (counter * 16) + 5] = 0;
+					endif;
+					counter = counter + 1;
+				endwhile;
+            ///------------------------
+				ret = 0;
+			endif;
+		endif;
+	else
+		ret = -1;
+	endif;
+
+   ///------------------------reset the MODE of current pid
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+
+	alias physicalAddrRetVal R10; // set the ret value on user stack
+	physicalAddrRetVal   = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = ret;
+
+   ///------------------------ restore the user sp from UPTR
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+	ireturn;
+endif;
+////////////////////////////////////////////////////////////////////////////////

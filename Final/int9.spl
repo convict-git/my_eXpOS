@@ -1,0 +1,275 @@
+// # Exec System Call -s [p]
+
+// Arguments: File Name (String) of the executable file (which must be of XEXE format)
+// ReturnValue:
+// -1 	File not found or file is of invalid type
+// Description:
+// Exec destroys the present process
+// and loads the executable file given as input into a new memory address space.
+
+// A successful Exec operation --> extinction of the invoking process and hence never returns to it.
+
+// All open instances of file and semaphores of the parent process are closed.
+// However, the newly created process will INHERIT THE PID of the calling process.
+////////////////////////////////////////////////////////////////////////////////
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9]  = 9;            // set the MODE flag to 9
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;           // store user SP in UPTR
+
+alias userSP R1;
+userSP = SP;
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1; // initiailize kernel stack
+////////////////////////////////////////////////////////////////////////////////
+// ------------- extracting argument 1 -> thus (userSP - 4)'s address translation
+// USER Stack looks like this :-
+
+//       IP <---------------------- SP (points here)   userSP
+// space for Return value                              userSP - 1
+//    Argument 3                                       userSP - 2
+//    Argument 2                                       userSP - 3
+//    Argument 1                                       userSP - 4
+// system call number                                  userSP - 5
+
+alias filename R3;
+filename = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + ((userSP - 4) % 512)];
+
+//--------------------------------------------------- check for file entry in inode table
+
+alias fileindex R4;
+alias flag R5;
+
+flag = 0;
+fileindex = 0;
+
+while (fileindex < MAX_FILE_NUM) do
+   if ([INODE_TABLE + (16 * fileindex) + 1] == filename) then                             // 2nd entry corresponds to filename
+      if ([INODE_TABLE + 16 * fileindex] == EXEC) then                                  // 1st entry corresponds to file type {EXEC, DATA, ROOT}
+         flag = 1;
+         break;
+      endif;
+   endif;
+   fileindex = fileindex + 1;
+endwhile;
+
+fileindex = INODE_TABLE + 16 * fileindex;
+
+//
+// while (fileindex < 960) do                            // MAX_FILE_NUM = 60 , entry size = 16 => 60*16 = 960
+//    // ----------------------------------------------- file name is valid AND file type is EXEC
+// 	if ([INODE_TABLE + fileindex + 1] == filename && [INODE_TABLE + fileindex] == EXEC) then
+//      flag = 1;
+//      break;
+//    endif;
+//
+// 	fileindex = fileindex + 16;                       // NOTE - look! that's why we divide by 16 later
+// endwhile;
+//
+
+/////////////////////////////////////////////////////////////////////////////////
+
+
+//-----------------------------------------------  if file not found, return -1
+if (flag == 0) then
+   // --------------------- return value at (userSP - 1)'s address translation
+   alias physicalAddrRetVal R10;
+
+   physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+   [physicalAddrRetVal] = -1;                               // return -1
+
+   SP = userSP;                                             // set SP to user SP
+   [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;        // set mode flag to 0
+   ireturn;                                                 // return to user mode
+   //--------------------------------------------------------------------------------
+else
+   // ---------------- now fileindex is the INDEX of the file in the Inode table
+	// fileindex = (fileindex)/16;                                 // NOTE FIXME
+   // -------------------------------------------------------- call exit_process to deallocte the resources
+	multipush(R1, R2, R3, R4, R5);
+
+	R1 = 3;                         // Function number 3 in MOD 1 is # (exit_process)
+	R2 = [SYSTEM_STATUS_TABLE + 1]; // current pid
+	call MOD_1;                     // # (Process Manager)
+
+	multipop(R1, R2, R3, R4, R5);
+   //------------------------------------------ acquire the SAME user Area Page Number
+   //-------- released by exit_process ( through MEM_FREE_LIST & SYSTEM_STATUS_TABLE )
+
+	alias UserAreaPage R6;
+
+   //------------------------------- user area page of this process [ to be procured again ]
+	UserAreaPage = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11];
+
+   // ------------------------ decrease MEM_FREE_COUNT (word 2) in system status table
+	[SYSTEM_STATUS_TABLE + 2] = [SYSTEM_STATUS_TABLE + 2] - 1;
+
+   // ------------------------------- increment entry of UserAreaPage in MEM_FREE_LIST
+	[MEMORY_FREE_LIST + UserAreaPage] = [MEMORY_FREE_LIST + UserAreaPage] + 1;
+
+   // -------------------------------------------------- set SP to beginning of kernel page
+
+	SP = UserAreaPage*512 - 1;
+
+   // ------------------------------- set all 16 entries of per-process resource table to -1
+   //------------------  per-process resource table stored in LAST 16 WORDS of USER AREA PAGE
+   // NOTE
+
+   alias perProcTable R9;
+   alias counter R8;
+
+	perProcTable = (UserAreaPage) * 512 + (512 - 16);		      // last 16 words of UserAreaPage
+	counter = 0;
+
+	while (counter < 16) do
+
+		[perProcTable + counter] = -1;                                // set each value to -1
+		counter = counter + 1;
+
+	endwhile;
+
+   // --------------------------------------------------- set the state of process as RUNNING
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = RUNNING;
+
+   // ------------------- in proc table, set inode index field to index of inode table entry of file
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 7] = fileindex;     // NOTE
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+   // ---------------------------------------------------- set page table for new process
+
+	alias ptbr R7;
+
+   ptbr = PAGE_TABLE_BASE + ([SYSTEM_STATUS_TABLE + 1] * 20);              // NOTE
+
+	[ptbr + 0] = 63;                                                        // Library
+	[ptbr + 1] = "0100";
+	[MEMORY_FREE_LIST + 63] = [MEMORY_FREE_LIST + 63] + 1;                  // inc MEM_FREE_LIST
+
+	[ptbr + 2] = 64;                                                        // Library
+	[ptbr + 3] = "0100";
+	[MEMORY_FREE_LIST + 64] = [MEMORY_FREE_LIST + 64] + 1;                  // inc MEM_FREE_LIST
+
+   [ptbr + 4] = -1;                                                     // invalidate heap pages
+	[ptbr + 5] = "0000";
+   [ptbr + 6] = -1;
+   [ptbr + 7] = "0000";
+
+
+   //--------------------------------------------------------------------------------
+
+
+   // ------------ get the disk block of the 1st code page of process from INODE TABLE
+	if ([fileindex + 8] != -1) then				// first code page NOTE
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9);
+
+		R1 = 5;									         // get code page
+		R2 = [fileindex + 8];                  // NOTE - disk block number
+		call MOD_2;                               // R0 has code page
+
+		multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9);
+
+      // --------------------------- [8, 15] entries are for code pages in page table
+
+		[ptbr + 8] = R0;
+
+		if (R0 > 0) then                          // got valid physical page
+			[ptbr + 9] = "0100";
+		else                                      // could not get code page
+			[ptbr + 9] = "0000";
+		endif;
+
+	endif;
+
+
+   //--------------------------------------------------------------------------------
+   // ---------------- two stack pages -- call Get_Free_Page (func 1) in memory manager (mod 2)
+
+	counter = 0;
+
+   // --------------------------------- 16, 17, 18, 19 are OFFSETS in page table for stack pages
+
+   // aux bits for page table is in this order - RVWD
+   // R - Reference bit
+   // V - Valid bit
+   // W - Write bit
+   // D - Dirty bit
+
+	while (counter < 2) do			                  // for Stack
+
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9);
+
+		R1 = 1;                                     // get free page
+		call MOD_2;                                 // R0 has free physical page
+
+		multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9);
+
+		[ptbr + 16 + counter*2] = R0;
+		[ptbr + 16 + counter*2 + 1] = "0110";
+
+		counter = counter + 1;
+	endwhile;
+
+   //--------------------------------------------------- Invalidate other 3 code pages
+
+   [ptbr + 10] = -1;
+	[ptbr + 11] = "0000";
+
+   [ptbr + 12] = -1;
+	[ptbr + 13] = "0000";
+
+   [ptbr + 14] = -1;
+	[ptbr + 15] = "0000";
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+// ---------------------------------------------------- set up per-process Disk Map table of process
+
+// Disk Map Table stores the disk block number corresponding to pages of each process
+
+// each entry of DISK_MAP_TABLE has 10 words
+// Unused 	Unused 	Heap 1 in disk 	Heap 2 in disk 	Code 1 in disk 	Code 2 in disk 	Code 3 in disk 	Code 4 in disk 	Stack Page 1 in disk 	Stack Page 2 in disk
+
+// Inode table has :-
+// FILE TYPE 	FILE NAME 	FILE SIZE 	USER ID 	PERMISSION 	Unused (3 words) 	DATA BLOCK 1 	DATA BLOCK 2 	DATA BLOCK 3 	DATA BLOCK 4 	Unused (4 words)
+
+
+
+// -------------------------- not applicable entries of Disk Map Table for this process will be -1
+// ------------------------------------------------------ take code pages' blocks from INODE TABLE
+
+
+	counter = 0;
+
+	while (counter < 10) do
+
+		[DISK_MAP_TABLE + ([SYSTEM_STATUS_TABLE + 1]*10) + counter] = -1;                // initialize with -1
+		counter = counter + 1;
+
+	endwhile;
+
+	[DISK_MAP_TABLE + [SYSTEM_STATUS_TABLE + 1]*10 + 4] = [fileindex + 8];
+	[DISK_MAP_TABLE + [SYSTEM_STATUS_TABLE + 1]*10 + 5] = [fileindex + 9];
+	[DISK_MAP_TABLE + [SYSTEM_STATUS_TABLE + 1]*10 + 6] = [fileindex + 10];
+	[DISK_MAP_TABLE + [SYSTEM_STATUS_TABLE + 1]*10 + 7] = [fileindex + 11];        // Heap and code pages NOT in disk yet
+
+   // get the entry point IP val from header of new process [ start of code page + 1 ]
+   // store it at the top/beginning of user stack
+
+   if ([ptbr + 8] > 0) then                                                            // NOTE
+
+	   [ [ptbr + 16]*512 ] = [ [ptbr + 8]*512 + 1 ];
+
+   endif;
+
+   //--------------------------------------------------------------------------------
+
+	SP = 8*512;                                                       // user SP
+
+   [PROCESS_TABLE + ( [SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;      // mode flag
+
+   ireturn;                                                          // return to user mode
+endif;

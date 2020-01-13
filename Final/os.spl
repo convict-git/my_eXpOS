@@ -1,0 +1,161 @@
+// # OS Startup Code -s
+
+// Description - OS Startup Code is loaded from disk to memory by the ROM Code on machine startup.
+// Its main function is to prepare the machine for executing the processes.
+// It initializes data structures, loads root file, disk free list, etc into the memory.
+// OS startup code invokes Boot Module to help the booting.
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+loadi(2, 15);	        // Exception Handler
+loadi(3, 16);
+
+loadi(4, 17);	        // Timer
+loadi(5, 18);
+
+loadi(6, 19);	        // disk interrupt
+loadi(7, 20);
+
+loadi(8, 21);	        // Console interupt
+loadi(9, 22);
+
+loadi(63, 13);	        // Library
+loadi(64, 14);
+
+loadi(10, 23);	        // INT 4
+loadi(11, 24);
+
+loadi(12, 25);	        // INT 5
+loadi(13, 26);
+
+loadi(14, 27);	        // INT 6
+loadi(15, 28);
+
+loadi(16, 29);	        // INT 7
+loadi(17, 30);
+
+loadi(18, 31);	        // INT 8
+loadi(19, 32);
+
+loadi(20, 33);	        // INT 9
+loadi(21, 34);
+
+loadi(22, 35);	        // INT 10
+loadi(23, 36);
+
+loadi(24, 37);	        // INT 11
+loadi(25, 38);
+
+loadi(26, 39);	        // INT 12
+loadi(27, 40);
+
+loadi(28, 41);	        // INT 13
+loadi(29, 42);
+
+loadi(30, 43);	        // INT 14
+loadi(31, 44);
+
+loadi(32, 45);	        // INT 15
+loadi(33, 46);
+
+loadi(36, 49);	        // INT 17
+loadi(37, 50);
+
+loadi(34, 47);	        // INT 16
+loadi(35, 48);
+
+
+loadi(38, 51);	        // INT 18
+loadi(39, 52);
+// ---------------------------------------------------- Load Boot Module and INIT process
+loadi(54,67);	            // MOD 7
+loadi(55,68);
+
+loadi(69,11);	            //IDLE
+
+// FIXME NOTE - typo in documentation of os_startup
+// set SP to (user area page number of idle) * 512 - 1  [beginning of kernel stack of idle]
+
+SP = (76*512-1);
+
+// -------------------------------------------------------------------- call boot module
+call MOD_7;
+
+// --------------------------------------------- initialize the page table for idle process
+// -------------------------------- PTBR, PTLR
+
+PTBR = PAGE_TABLE_BASE;
+PTLR = 10;
+
+// FIXME NOTE - allocated library for idle in earlier stages, documentation says -1
+// -------------------------------- set entries for library and heap to be -1 for idle
+
+[PTBR + 0] = 63;
+[PTBR + 1] = "0100";
+[PTBR + 2] = 64;
+[PTBR + 3] = "0100";
+
+// ------------------------------------------------------------------------- Heap
+
+[PTBR + 4] = -1;
+[PTBR + 5] = "0000";
+[PTBR + 6] = -1;
+[PTBR + 7] = "0000";
+
+// ----------------------------------- set first code page entry to 69, rest -1
+
+[PTBR + 8] = 69;
+[PTBR + 9] = "0100";
+[PTBR + 10] = -1;
+[PTBR + 11] = "0000";
+[PTBR + 12] = -1;
+[PTBR + 13] = "0000";
+[PTBR + 14] = -1;
+[PTBR + 15] = "0000";
+
+// ---------------------------------- set first stack page entry to 70, rest -1
+
+[PTBR + 16] = 70;
+[PTBR + 17] = "0110";
+[PTBR + 18] = -1;
+[PTBR + 19] = "0000";
+
+// ------------------------------------------- initialize process table for idle
+
+[PROCESS_TABLE + 0] = 0;                        // TICK
+[PROCESS_TABLE + 1] = 0;                        // PID
+[PROCESS_TABLE + 3] = 0;                        // USERID
+[PROCESS_TABLE + 4] =  RUNNING;                 // STATE
+
+// set user area page of idle as 76 (os_startup called BOOT module from page 76)
+
+[PROCESS_TABLE + 11] = 76;
+
+[PROCESS_TABLE + 12] = 0;                       // KTPR
+[PROCESS_TABLE + 13] = 8*512;                   // UPTR (8*512) top of user stack
+[PROCESS_TABLE + 14] = PAGE_TABLE_BASE;         // PTBR
+[PROCESS_TABLE + 15] = 10;                      // PTLR
+
+// ------------------- set current pid (in system status table) to 0 (for idle)
+
+[SYSTEM_STATUS_TABLE + 1] = 0;
+
+// ------------------------------ set IP value from header to top of user stack
+
+[70 * 512] = [69*512 + 1];          // word 1 of 1st code page has header, user stack at page 70
+
+// -------------------------------- set PTBR to PAGE_TABLE_BASE and PTLR to 10
+
+PTBR = PAGE_TABLE_BASE;
+PTLR = 10;
+
+// -------------------------------- set SP to top of user stack (logical address)
+
+SP = 8*512;
+
+// ---------------------------------------------------- return to user mode
+
+ireturn;
+
+
+// NOTE - swapper daemon not initialized - not needed until stage 27

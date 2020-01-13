@@ -1,0 +1,147 @@
+// Context Switch Module - Scheduler module -s
+
+// Yields control from the current process and schedules the next process for execution.
+
+//  Function Number 	Function Name 	   Arguments
+//  - 	               Switch Context 	Nil
+
+////////////////////////////////////////////////////////////////////////////////
+
+// ------------------------------------------------ pid of current process from sst
+alias currentpid R0;
+currentpid = [SYSTEM_STATUS_TABLE + 1];
+
+// ------------------------  push BP reg to kernel stack as expl application doesn't
+multipush(BP);
+
+// ----------------------------------------------------------------------- save KTPR
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 12] = SP % 512;
+
+// ----------------------------------------------------------------------- save PTBR
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 14] = PTBR;
+
+// ----------------------------------------------------------------------- save PTLR
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 15] = PTLR;
+
+//---------------------------------------------------------------------------------
+alias flag R1;
+alias pid R2;
+
+//---------------------------------------------------------------------------------
+// In System Status Table :-
+
+// PAGING_STATUS (1 word) (word 5) - specifies whether swapping is initiated.
+// Swap Out / Swap In are indicated by 0 and 1, respectively.
+// Set to 0 if paging is not in progress.
+
+//---------------------------------------------------------------------------------
+
+// --------------- if PAGING_STATUS in system status table NOT ZERO (PAGING GOING ON)
+
+// if ((1 == 0) && [SYSTEM_STATUS_TABLE + 5] != -1 && [SYSTEM_STATUS_TABLE + 5] != 0) then   // FIXME after stage26
+//    // ------------------------------------------- if paging process blocked (disk operation)
+// 	if ([PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5]*16 + 4] == WAIT_DISK) then
+//       // ----------------------------------------------- choose idle process for running
+// 		pid = 0;
+// 	else
+//       // --------------------------------------------------------- schedule swapper Daemon
+// 		pid = [SYSTEM_STATUS_TABLE + 5];
+// 	endif;
+//    // ------------------------------------------------------- Paging not going on (else case)
+//
+// else
+	flag = 0;
+	pid = currentpid + 1;
+   // ------------------------------ find next NON-SWAPPED process using Round-robin scheduling
+   // ----------------------- check SWAP_FLAG in process table - (0 - not swapped ; 1 - swapped)
+
+	while (pid < MAX_PROC_NUM) do
+      // -------------------------------------------------------------  will be scheduled iff :-
+      // -------------------------------> not swapped out      [PROCESS_TABLE + pid*16 + 6] == 0
+      // -------------------------------> created/ready state
+
+		// if ([PROCESS_TABLE + pid * 16 + 6] == 0 && ([PROCESS_TABLE + (pid * 16) + 4] == READY || [PROCESS_TABLE + (pid * 16) + 4] == CREATED)) then // FIXME after swapping stage26
+		if ([PROCESS_TABLE + (pid * 16) + 4] == READY || [PROCESS_TABLE + (pid * 16) + 4] == CREATED) then
+         // -------------------------------------------------------- found a process to schedule
+			flag = 1;
+			break;
+		endif;
+		pid = pid + 1;
+	endwhile;
+
+   // ----------------------------------  if not found after current pid, try from 1 to current PID
+	if (flag == 0) then
+		pid = 1;                                                          // starting from 1
+		while (pid < currentpid) do                                      // can schedule current proc again
+		// if ([PROCESS_TABLE + pid * 16 + 6] == 0 && ([PROCESS_TABLE + (pid * 16) + 4] == READY || [PROCESS_TABLE + (pid * 16) + 4] == CREATED)) then // FIXME after swapping stage26
+         if ([PROCESS_TABLE + (pid * 16) + 4] == READY || [PROCESS_TABLE + (pid * 16) + 4] == CREATED) then
+            // -------------------------------------------------------- found a process to schedule
+				flag = 1;
+				break;
+		   endif;
+         pid = pid + 1;
+		endwhile;
+	endif;
+   // ----------------------------------------------------------------------------------- not found still
+	if (flag == 0) then
+      // -------------------------------------------------------------------------------- schedule idle
+		pid = 0;
+	endif;
+// endif;
+// ------------------------------------------------------------ new pid set in the system status table
+
+[SYSTEM_STATUS_TABLE + 1] = pid;
+// ----------------------------------------- set PTBR, PTLR registers from process table of new process
+
+PTBR = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 14];
+PTLR = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 15];
+
+// ----------------------------------------------------------------- if new process is in CREATED state
+// ------------------------------------------------------------------ this proc just forked from parent
+
+if ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] == CREATED) then
+   // ---------------------------------------- set SP to user sp from process table of new proc
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+   // ----------------------------------------- set BP to val stored at the BEGINNING of KERNEL STACK
+   // ----------------------- BP value stored at the beginning of kernel stack by Fork () system call
+
+	BP = [ [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 ];
+   // ---------------------------------------------------- set state of process as RUNNING
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = RUNNING;
+   // --------------------------------------------------------------- set mode flag to 0
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+   // --------------------------------------------------------------  return to USER MODE
+
+	ireturn;
+
+   // ----------------------------------------------------------------------------------
+
+endif;
+
+// -------------------------------------------------- set state of new process as RUNNING
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = RUNNING;
+
+// ------------------------------------------------ set SP to userAreaPageNum * 512 + KPTR
+
+alias userAreaPage R3;
+alias kptr R4;
+
+userAreaPage = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11];
+kptr = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 12];
+
+SP = userAreaPage * 512 + kptr;
+//breakpoint;
+// ----------------------------------------------------------------------------------
+// ------------------------ restore BP reg of new process from top of its kernel stack
+
+multipop(BP);
+
+// ----------------------------------------------------------------------------------
+return;
+
+////////////////////////////////////////////////////////////////////////////////
+

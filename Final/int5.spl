@@ -1,0 +1,397 @@
+// # INT 5 - Seek,  Open,  Close system calls -s
+////////////////////////////////////////////////////////////////////////////////
+
+// -------------------------------------------------------- switch to kernel stack
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+
+alias userSP R1;
+userSP = SP;
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1;
+
+alias ret R2;
+
+// --------------- get system call number from (userSP - 5)'s address translation
+
+alias SyscallNumber R3;
+SyscallNumber = [[PTBR + 2 * ((userSP - 5)/ 512)] * 512 + ((userSP - 5) % 512)];
+
+// ------------------------------------ find the per-process table of the process
+
+alias perprocesstable R4;
+perprocesstable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+
+
+////////////////////////////////////////////////////////////////////////////////
+// # Open System Call :-
+
+// Arguments    - Filename (string)
+// Return value -
+
+// # File Descriptor (Integer) Success,  the return value is the file descriptor for the opened file
+//  -1 	                      File not found or file is not a data or root file
+//  -2 	                      System has reached its limit of open files
+//  -3 	                      Process has reached its limit of resources
+
+
+// Description : Only data and root files can be opened.
+// The Open operation returns a file descriptor which identifies the open instance of the file.
+// An application can open the same file several times
+// and each time, a different descriptor will be returned by the Open operation.
+
+// The OS associates a seek position with every open instance of a file.
+// The seek position indicates the current location of file access (read/write).
+// The Open system call initializes the seek position to 0 (beginning of the file).
+
+// The seek position can be modified using the Seek system call.
+
+// The root file can be opened for Reading by specifying the filename as "root".
+// Note that the Root file is different from the other files - It has a reserved memory page copy.
+// So this will be treated as a special case in all related system calls.
+
+////////////////////////////////////////////////////////////////////////////////
+
+
+if (SyscallNumber == 2) then
+
+   // -------------------------- set mode flag to syscall number (2 now)
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 2;
+
+   // -------------------------------------- already in kernel stack
+   // --------------------- argument 1 (userSP - 4)'s address translation
+
+	alias filename R5;
+	filename = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + ((userSP - 4) % 512)];
+
+	alias counter R6;
+	alias flag R7;
+	flag = 0;
+	counter = 0;
+
+   // --------------------- find a free entry in the per-process table of the process
+   // ----------------- per-process table has 16 entries (resource identifier, index)
+
+	while (counter < 16) do
+
+      // a free entry has resource identifier word (0,2,4,6,8,10,12,14) as -1
+
+		if ([perprocesstable + counter] == -1) then
+			flag = 1;
+			break;
+		endif;
+
+		counter = counter + 2;
+	endwhile;
+   // ----------------- if not found, return -3 - process reached limit of resources
+
+	if (flag != 1) then
+
+		ret = -3;				// per-process table full
+		goto lb2;
+
+	endif;
+   // ------------- now counter is index of free entry in per-proc table of process
+
+
+   // -------------------------------- call open function from File manager (MOD 3)
+   // -------------------------------------- to get an index in the open file table
+
+	multipush(R1, R2, R3, R4, R5, R6, R7);
+
+	R1 = 3;                             // OPEN function in File manager mod
+	R2 = filename;                      // filename
+	call MOD_3;									// R0 contains open file table index / -1 / -2
+
+	multipop(R1, R2, R3, R4, R5, R6, R7);
+
+   // ------------------------------------------ if R0 < 0, open failed, return error
+   // ------------------------------------- R0 == -1 iff file not found, type is EXEC
+   // ------------------------------- R0 == -2 iff system reached limit of open files
+   // ----------------- return R0 as it matches with specification of OPEN systemcall
+
+	if (R0 < 0) then
+
+		ret = R0;
+		goto lb2;
+
+	endif;
+
+   // ---------------------------------------------------------- set per-proc table
+
+	[perprocesstable + counter] = FILE;
+	[perprocesstable + counter + 1] = R0;		//return value of open file manager
+	ret = (counter / 2);						//index of perprocess table entry
+	goto lb2;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Close System Call
+
+// Arguments - file descriptor (integer)
+// # Return Value :
+//                       0 (success)
+//                      -1 (file descp invalid)
+
+// Description - The Close system call closes an open file.
+// The file descriptor ceases to be valid once the close system call is invoked.
+
+////////////////////////////////////////////////////////////////////////////////
+
+if (SyscallNumber == 3) then				// Close
+
+   // --------------------------------- set mode flag to syscall number (3 now)
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 3;
+
+   // -------------------------------- already switched to kernel stack
+   // -------- get file descriptor from user stack (address translation needed)
+   // -------------------------------------------------------------- argument 1
+
+	alias filedescriptor R5;
+	filedescriptor = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + ((userSP - 4) % 512)];
+
+   // -------------------------- check if file descptor valid [0, 7] inclusive
+
+	if (filedescriptor < 0 || filedescriptor > 7) then
+
+      // ---------------------------------------------- if invalid, return -1
+
+		ret = -1;
+		goto lb2;
+
+	endif;
+
+   // ------------ per-proc resource table's beginning address already found
+   // -------------- if resource identifier invalid OR does not contain file
+
+	if ([perprocesstable + 2 * filedescriptor] != FILE)	then
+
+		ret = -1;                              // return -1 (invalid file descptor)
+		goto lb2;
+
+	endif;
+
+   // call close function in File Manager Module (MOD 3)
+   // open file index of file is in per-proc resource table (2*file_descp + 1)
+
+	multipush(R1, R2, R3, R4, R5);
+
+	R1 = 4;
+	R2 = [perprocesstable + 2 * filedescriptor + 1];   // Open file table index
+	call MOD_3;											         // Close
+
+	multipop(R1, R2, R3, R4, R5);
+
+   // --------------------- invalidate this per-proc resource table entry
+
+	[perprocesstable + 2 * filedescriptor] = -1;
+
+	ret = 0;                                           // success
+
+	goto lb2;
+
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Seek System Call
+// Arguments - file descriptor (integer), offset (integer)
+// # Return value -
+//   0 	Success
+//  -1 	File Descriptor given is invalid
+//  -2 	Offset value moves the file pointer to a position outside the file
+
+// Description -
+// The Seek operation allows the application program to change the value of the file pointer
+// so that subsequent Read/Write is performed from a new position in the file.
+
+// The new value of the file pointer is determined by adding the offset to the current value.
+// (A negative Offset will move the pointer backwards).
+
+// An Offset of 0 will reset the pointer to the beginning of the file.
+
+
+// If a positive offset goes beyond the size of the file,
+// the seek position will be set to the file size (in the inode table entry).
+
+// A negative offset leading to LSeek value below 0 will give an error.
+
+////////////////////////////////////////////////////////////////////////////////
+
+if (SyscallNumber == 6) then
+
+   // -------------------------- set mode flag to syscall number (6 now)
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 6;
+
+   // -------------------------------- already switched to kernel stack
+   // ------------------- get file descriptor from user stack ( arg 1 )
+   // ------------------------------ (userSP - 4) has the 1st argument
+
+	alias filedescriptor R5;
+	filedescriptor = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + ((userSP - 4) % 512)];
+
+   // ------------------------------- if file descptor invalid, return -1
+   // ---------------------- valid file descptor range [0, 7] - inclusive
+
+	if (filedescriptor < 0 || filedescriptor > 7) then
+
+		ret = -1;                     // return -1
+		goto lb2;
+
+	endif;
+
+   // ------ already got beginning of per-proc resource table for this proc
+
+   // if resource identifier in per-proc resource table for this file descptor invalid
+   // ----------------------------------------------------------- return -1
+
+   // (0, 2, 4, 6, 8, 10, 12, 14) indices are valid resource identifiers for each entry
+
+	if ([perprocesstable + 2 * filedescriptor] != FILE)	then
+
+		ret = -1;                                    // return -1
+		goto lb2;
+
+	endif;
+
+	alias fileindex R6;
+	alias inodeindex R7;
+
+   // ---------------- get index of open file table from per-proc resource table
+
+	fileindex = [perprocesstable + 2 * filedescriptor + 1];
+
+   // ---------------------------- get index of inode table from open file entry
+
+	inodeindex = [OPEN_FILE_TABLE + 4 * fileindex + 0];
+
+   // --------------------------------- call acquire_inode from resource manager
+
+	multipush(R1, R2, R3, R4, R5, R6, R7);
+
+	R1 = 4;
+	R2 = inodeindex;                    // inode index
+	R3 = [SYSTEM_STATUS_TABLE + 1];     // pid
+	call MOD_0;									// R0 is 0 or -1
+
+	multipop(R1, R2, R3, R4, R5, R6, R7);
+
+   // --------------------------------- if locking failed (R0 == -1), return -1
+
+	if (R0 == -1) then
+
+		ret = -1;                // return -1
+		goto lb2;
+
+	endif;
+
+	alias lseek R8;
+	alias filesize R9;
+
+   // ----------------- get current lseek value from open file table (word 2)
+
+	lseek = [OPEN_FILE_TABLE + 4 * fileindex + 2];
+
+   // ----------------------------------- Check the validity of given offset
+
+	if (inodeindex == INODE_ROOT) then
+      // ---------------------- if inode index is INODE_ROOT , filesize = 480
+
+		filesize = 480;
+
+	else
+      // ------------------------- take size from inode table entry (word 2)
+
+		filesize = [INODE_TABLE + inodeindex * 16 + 2];
+
+	endif;
+
+   // ------- get given offset (argument 2) from user stack :- (userSP - 3)
+
+	alias goffset R10;
+	goffset = [[PTBR + 2 * ((userSP - 3)/ 512)] * 512 + ((userSP - 3) % 512)];
+
+   // ------------------------------ if (lseek + goffset) < 0 , return -2
+	if (lseek + goffset < 0) then
+
+		ret = -2;
+		goto lb1;
+
+	endif;
+
+   // --------------------------------------------------- validity check done
+
+
+	if (goffset == 0) then
+
+      // ---------------------------- if given offset == 0, set lseek to 0
+
+		[OPEN_FILE_TABLE + 4 * fileindex + 2] = 0;
+
+	else
+
+      // ---------- if (lseek + offset) > filesize, set lseek to filesize
+
+		if (lseek + goffset > filesize) then
+
+			[OPEN_FILE_TABLE + 4 * fileindex + 2] = filesize;
+
+		else
+
+         // ------------------------- else set lseek as (lseek + offset)
+
+			[OPEN_FILE_TABLE + 4 * fileindex + 2] = lseek + goffset;
+
+		endif;
+
+	endif;
+
+   // ------------------------------------------------------------ success
+
+	ret = 0;
+
+   // ----------------------- call release_inode in resource manager (MOD 0)
+
+	lb1:
+
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10);
+
+		R1 = 5;                                // release inode
+		R2 = inodeindex;                       // inode index
+		R3 = [SYSTEM_STATUS_TABLE + 1];        // pid
+		call MOD_0;										// R0 has 0 or -1
+
+		multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10);
+
+endif;
+
+// ------------------------------------- to save return value, shift to user mode
+
+lb2:
+
+	alias physicalAddrRetVal R10;
+
+   //----------------------------------------- (userSP - 1)'s address translation
+
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+
+   // ----------------------------------------------- store return value at above address
+
+	[physicalAddrRetVal] = ret;
+
+   // -------------------------------------------------------- set SP to user stack's SP
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+
+   // ------------------------------------------------------------- set mode flag to 0
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+
+   // ---------------------------------------------------------------------- user mode
+
+	ireturn;
+
+////////////////////////////////////////////////////////////////////////////////

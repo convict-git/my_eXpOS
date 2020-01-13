@@ -1,0 +1,9 @@
+#! /bin/bash
+git fetch origin && git merge origin/master
+echo -e -n "\e[32mEnter commit msg: \e[0m"
+read commit_msg
+if [ -z "$commit_msg" ]; then
+  git add . && git commit -m "Update" && git push -u origin master
+else
+  git add . && git commit -m "$commit_msg" && git push -u origin master
+fi

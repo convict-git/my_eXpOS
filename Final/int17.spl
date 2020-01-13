@@ -1,0 +1,62 @@
+// # Interrupt 17 - Login -p
+// FIXME : Incomplete just allows login
+
+////////////////////////////////////////////////////////////////////////////////
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP;
+alias userSP R1;
+userSP = SP;
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]*512 - 1;
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 27;
+
+////////////////////////////////////////////////////////////////////////////////
+if ([SYSTEM_STATUS_TABLE + 1] != 1) then
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = -2;
+	ireturn;
+endif;
+
+// alias username R4;
+// username = [([PTBR + 2 * ((userSP - 4) / 512)] * 512) + ((userSP - 4) % 512)];
+// alias password R5;
+// password = [([PTBR + 2 * ((userSP - 3) / 512)] * 512) + ((userSP - 3) % 512)];
+// encrypt password;
+// alias flag R7;
+// flag = -1;
+
+alias counter R6;
+counter = 0;
+
+// FIXME - for stage 26
+// while (counter < MAX_USER_NUM) do
+// 	if ([USER_TABLE + 2 * counter] == username && [USER_TABLE + 2 * counter + 1] == password) then
+// 		flag = 1;
+// 		break;
+// 	endif;
+// 	counter = counter + 1;
+// endwhile;
+// if (flag == -1) then
+// 	alias physicalAddrRetVal R10;
+// 	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+// 	[physicalAddrRetVal] = -1;
+// 	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+// 	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+// 	ireturn;
+// endif;
+
+[PROCESS_TABLE + (2 * 16) + 4] = CREATED;                              // shell process
+[PROCESS_TABLE + (2 * 16) + 3] = counter;                              // table id
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = WAIT_PROCESS;
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 5] = 2;            // shell process
+[SYSTEM_STATUS_TABLE + 0] = counter;                                   // user id
+
+multipush(R1,R4,R5,R6,R7);
+
+call MOD_5; // call the # (scheduler)
+
+multipop(R1,R4,R5,R6,R7);
+
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0; // reset the MODE
+SP = userSP;
+ireturn;
+

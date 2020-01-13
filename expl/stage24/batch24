@@ -1,0 +1,33 @@
+load --idle ../expl/common/idle.xsm
+load --init ../expl/common/shell.xsm
+load --exec ../expl/common/odd.xsm
+load --exec ../expl/common/even.xsm
+load --exec ../expl/common/prime1.xsm
+load --exec ../expl/stage24/a1_print.xsm
+load --exec ../expl/stage24/a2_read.xsm
+load --data ../expl/common/sample.dat
+load --data ../expl/common/numbers.dat
+load --os ../Final/os.xsm
+load --module 0 ../Final/mod0.xsm
+load --module 1 ../Final/mod1.xsm
+load --module 2 ../Final/mod2.xsm
+load --module 3 ../Final/mod3.xsm
+load --module 4 ../Final/mod4.xsm
+load --module 5 ../Final/mod5.xsm
+load --module 7 ../Final/mod7.xsm
+load --int=timer ../Final/timer.xsm
+load --int=console ../Final/consoleinterupt.xsm
+load --int=disk ../Final/diskinterrupt.xsm
+load --int=4 ../Final/int4.xsm
+load --int=5 ../Final/int5.xsm
+load --int=6 ../Final/int6.xsm
+load --int=7 ../Final/int7.xsm
+load --int=8 ../Final/int8.xsm
+load --int=9 ../Final/int9.xsm
+load --int=10 ../Final/int10.xsm
+load --int=11 ../Final/int11.xsm
+load --int=13 ../Final/int13.xsm
+load --int=14 ../Final/int14.xsm
+load --int=15 ../Final/int15.xsm
+load --library ../expl/library.lib
+load --exhandler ../Final/exception.xsm

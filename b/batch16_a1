@@ -1,0 +1,14 @@
+load --init ../spl_progs/stage13_16/stage16/bubble.xsm
+load --os ../spl_progs/stage13_16/stage16/os_startup_16.xsm
+load --module 7 ../spl_progs/stage13_16/stage16/boot_16.xsm
+load --module 5 ../spl_progs/stage13_16/stage14/switch_14.xsm
+load --module 4 ../spl_progs/stage13_16/stage16/mod4_16.xsm
+load --module 0 ../spl_progs/stage13_16/stage16/mod0_16.xsm
+load --idle ../spl_progs/stage7_12/stage12/idle12.xsm
+load --int=timer ../spl_progs/stage13_16/stage15/timer_14.xsm
+load --int=console ../spl_progs/stage13_16/stage16/console.xsm
+load --int=10 ../spl_progs/stage13_16/stage14/int10_14.xsm
+load --int=7 ../spl_progs/stage13_16/stage15/int7_15.xsm
+load --int=6 ../spl_progs/stage13_16/stage16/int6_16.xsm
+load --library ../expl/library.lib
+load --exhandler ../spl_progs/haltprog.xsm

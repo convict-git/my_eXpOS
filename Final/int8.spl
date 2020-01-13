@@ -1,0 +1,282 @@
+//# Interrupt 8 - Fork System call -p
+
+// Arguments: None
+// ReturnValue :
+// -------------------------------------------------------------------------------------------------------------
+//#PID (Integer) | Success, the return value to the parent is the process descriptor(PID) of the child process.
+// -------------------------------------------------------------------------------------------------------------
+// 0             | Success, the return value to the child.
+// -1            | Failure, Number of processes has reached the maximum limit. Returns to the parent
+// -------------------------------------------------------------------------------------------------------------
+// Replicates the process invoking the system call. The heap, code and library regions of the parent are shared by the child.
+// A new stack is allocated to the child and the parent's stack is copied into the child's stack.
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//------------------------  Initializations and book keeping
+alias childPid R1;
+alias curPID R14;
+alias systemStatusOffset R15;
+
+curPID             = [SYSTEM_STATUS_TABLE + 1];
+systemStatusOffset = curPID * 16;
+
+[PROCESS_TABLE + systemStatusOffset + 9]  = 8;            // set MODE to 8
+[PROCESS_TABLE + systemStatusOffset + 13] = SP;           // set UPTR to user SP
+
+SP = [PROCESS_TABLE + systemStatusOffset + 11] * 512 - 1; // initialize kernel stack
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//------------------------ Find a free process table entry for the new child process by calling get pcb entry
+multipush (R14, R15);
+
+R1 = 1;     // Function Number 1 in MOD 1 is # (Get PCB Entry)
+call MOD_1; // # (Process Manager)
+
+multipop (R14, R15);
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ check if Process table is full and no more new process can be allocated now
+childPid = R0;              // return value from get pcb entry
+if (childPid == -1) then // returned value -1 from get pcb entry
+	goto exit;
+endif;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// NOTE 0 : Child process have different stack (2 pages) and user area page (1 page), initially with same content,
+// and heap pages are shared between parent and child process
+
+// NOTE 1 : In PAGE TABLE there are MAX_PROC_PAGES = 10 entries, each entry is 2 words
+// 10 entries for => Shared Library(2) + Heap(2) + Code(4) + Stack(2)
+// physicalPageNum (1) + (Ref Bit, Valid Bit, Write Bit) (1)
+// 2 * counter     -> physicalPageNum
+// 2 * counter + 1 -> ref, valid, write bits
+
+// NOTE 2 :
+// The reference bit for a page table entry is set to 0 by the OS when the page is loaded to memory
+// and the page table initialized. When a page is accessed by a running process, the corresponding
+// reference bit is set to 1 by the machine hardware. This bit is used by the page replacement algorithm of the OS.
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ Get first of the two fresh pages for stack for child process
+multipush(R1, R14, R15);
+
+R1 = 1;     // Function number 1 in MOD 2 is # (Get Free Page)
+call MOD_2; // # (Memory Manager)
+
+multipop(R1, R14, R15);
+
+///------------------------ R0 contains return value (Physical page no. in memory) from get free page
+[PAGE_TABLE_BASE + 20 * childPid + 16] = R0;
+[PAGE_TABLE_BASE + 20 * childPid + 17] = "0110"; // Wondering why ref bit is 0? See NOTE 2
+
+///------------------------ Get second of the two fresh pages for stack for child process
+multipush(R1, R14, R15);
+
+R1 = 1;     // Function number 1 in MOD 2 is # (Get Free Page)
+call MOD_2; // # (Memory Manager)
+
+multipop(R1, R14, R15);
+
+///------------------------ R0 contains return value (Physical page no. in memory) from get free page
+[PAGE_TABLE_BASE + 20 * childPid + 18] = R0;
+[PAGE_TABLE_BASE + 20 * childPid + 19] = "0110"; // Wondering why ref bit is 0? See NOTE 2
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ Get one page for user area page for child process from get free page
+multipush(R1, R14, R15);
+
+R1 = 1;     // Function number 1 in MOD 2 is # (Get Free Page)
+call MOD_2; // # (Memory Manager)
+
+multipop(R1, R14, R15);
+///------------------------ R0 contains return value (Physical page no. in memory) from get free page
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Copy the parent's Process Table Entry except TICK, PID, PPID, USER AREA PAGE NUMBER, KERNEL STACK POINTER, INPUT BUFFER, PTBR and PTLR to the child.
+
+alias childOffsetProc R12;
+childOffsetProc = PROCESS_TABLE + childPid * 16;
+
+///------------------------ set all 16 process table entries for child process
+[childOffsetProc +  0] = 0;                                         // TICK               | Initialize to zero
+[childOffsetProc +  1] = childPid;                                  // PID                | set the pid got from get pcb
+[childOffsetProc +  2] = curPID;                                    // PPID               | current process is parent of this child process
+[childOffsetProc +  3] = [PROCESS_TABLE + systemStatusOffset + 3];  // userid             | (Copied from parent) stays under same user
+[childOffsetProc +  4] = CREATED;                                   // State pair.first   | Now in CREATED state
+[childOffsetProc +  5] = 0;                                         // state pair.second  | zero value initialized (useless right now)
+[childOffsetProc +  6] = [PROCESS_TABLE + systemStatusOffset + 6];  // swap flag          | (Copied from parent)
+[childOffsetProc +  7] = [PROCESS_TABLE + systemStatusOffset + 7];  // Inode index        | (Copied from parent)
+[childOffsetProc +  8] = 0;                                         // Input Buffer       | Initialized to zero
+[childOffsetProc +  9] = 0;                                         // Mode flag          | not yet in any syscall so MODE is 0
+[childOffsetProc + 10] = [PROCESS_TABLE + systemStatusOffset + 10]; // userareaswapstatus | (Copied from parent)
+[childOffsetProc + 11] = R0;                                        // User area page     | use the last page no. we got from get free page
+[childOffsetProc + 12] = 0;                                         // KTPR               | Initialized as empty
+[childOffsetProc + 13] = [PROCESS_TABLE + systemStatusOffset + 13]; // UPTR               | (Copied from parent)
+[childOffsetProc + 14] = PAGE_TABLE_BASE + 20 * childPid;           // PTBR               | 20 entry for each process
+[childOffsetProc + 15] = 10;                                        // PTLR               | 10 fixed logical pages
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ Copy the per-process resource table [ The child shares open files and acquired semaphores with the parent ]
+// NOTE on Per-Process Resource Table:
+// (user page number + 1) * 512 - 16 words -> staring of perProcessTable (Resource)
+// 16 words in perProcessTable (Resource) with 2 words per entry hence max 8 entries
+
+// fileDescriptor          -> local id what a process sees (SEMA ID or FILE ID)
+// 2 * fileDescriptor      -> validation word (-1 Invalid, 0 File, 1 Semaphore)
+// 2 * fileDescriptor + 1  -> global id (for file or sema)
+
+alias perProcResBaseAdParent R2;
+alias perProcResBaseAdChild R3;
+alias counter R4;
+alias offset R13;
+
+perProcResBaseAdParent = ([PROCESS_TABLE + systemStatusOffset + 11]) * 512 + (512 - 16); // perprocess table Base address for parent
+perProcResBaseAdChild  = ([PROCESS_TABLE + (childPid * 16) + 11]) * 512 + (512 - 16);    // perprocess table Base address for child
+
+counter = 0;
+
+while(counter < 16) do
+	[perProcResBaseAdChild + counter]     = [perProcResBaseAdParent + counter];     // copy word by word
+	[perProcResBaseAdChild + counter + 1] = [perProcResBaseAdParent + counter + 1]; // copy word by word
+
+	offset = 4 * [perProcResBaseAdParent + counter + 1];
+
+   ///------------------------ for every semaphore acquired by the parent, increment process count in Semaphore table
+   // NOTE about SEMAPHORE_TABLE :
+   // there can be at most MAX_SEM_COUNT = 32 semaphores in the system at any time
+   // Every entry of the Semaphore table is of 4 words :  locking Pid (1) + process_count (1) + unused (2)
+
+	if ([perProcResBaseAdParent + counter] == SEMAPHORE) then               // if semaphore
+		[SEMAPHORE_TABLE + offset + 1] = [SEMAPHORE_TABLE + offset + 1] + 1; // increment process count
+	endif;
+
+   ///------------------------ for every open file of the parent, increment the Open Instance Count in the Open File Table.
+   // NOTE about OPEN_FILE_TABLE :
+   // there can be at most MAX_OPENFILE_NUM = 32 open files in the system at any time
+   // Every entry of the Open File Table is of 4 words :  inode_index (1) + open_instance_count (1) + lseek (1) + unused (1)
+
+   if ([perProcResBaseAdParent + counter] == FILE) then                    // if file
+		[OPEN_FILE_TABLE + offset + 1] = [OPEN_FILE_TABLE + offset + 1] + 1; // increment open count instance
+	endif;
+
+	counter = counter + 2;
+endwhile;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ Copy the disk map table of parent process to child process's dmt
+// NOTE on DISK_MAP_TABLE : The Disk Map Table has 10 entries for a single process
+ // When the memory pages of a process are swapped out into the disk, the corresponding disk block
+ // numbers of those pages are stored in this table. It also stores block numbers of the code pages of the process.
+
+ // The entry in the disk map table entry has the following format: (10 words)
+ // Unused(1) + Unused(1) +	Heap 1 in disk(1)	+ Heap 2 in disk(1)	+ Code 1 in disk(1) + Code 2 in disk(1)
+ // + Code 3 in disk(1) + Code 4 in disk(1) + Stack Page 1 in disk(1)	+ Stack Page 2 in disk(1)
+
+counter = 0; 					//Disk map table
+while(counter < 10) do
+	[DISK_MAP_TABLE + childPid * 10 + counter] = [DISK_MAP_TABLE + curPID * 10 + counter];
+	counter = counter + 1;
+endwhile;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ Copy the page table entries (code, heap and library) from the parent's page table to the child
+alias pageNum R2;
+alias pageTableOffsetParent R3;
+alias pageTableOffsetChild R5;
+alias totalPageEntriesBeforeStack R6;
+
+pageTableOffsetParent = PAGE_TABLE_BASE + 20 * curPID;
+pageTableOffsetChild  = PAGE_TABLE_BASE + 20 * childPid;
+totalPageEntriesBeforeStack = 2 * MAX_PROC_PAGES - 4; // 2 * 10 - 4 = 16 (Before stack)
+
+///------------------------
+// NOTE on PAGE_TABLE :
+// There are MAX_PROC_PAGES = 10 entries, each entry is 2 words
+// 10 entries for => Shared Library(2) + Heap(2) + Code(4) + Stack(2)
+// Each entry of 2 words : physicalPageNum (1) + {Ref Bit, Valid Bit, Write Bit} (1)
+
+counter = 0;
+while(counter < totalPageEntriesBeforeStack) do				//uptil stack page (i.e. only for shared library, code, heap)
+	offset = pageTableOffsetParent + counter;
+
+	if(counter % 2 == 0) then // then physicalPageNum (see NOTE above)
+		pageNum = [offset];
+
+      ///------------------------ if heap page is not allocated for parent process then allocate two pages for heap
+      // and let both the parent and child process know now itself to share these pages as heap
+      // NOTE : Get free page is blocking function hence until fresh page isn't available the invoking process will keep waiting
+
+		if (pageNum == -1 && (counter == 4 || counter == 6)) then
+			multipush(R1, R2, R3, R4, R5, R6, R13, R14, R15, R12);
+         ///------------------------ call get free page to get fresh page for heap section (which will be shared)
+
+			R1 = 1;                    // Function Number 1 in MOD 2 is # (Get Free Page)
+			call MOD_2;                // # (Memory Manager)
+
+         ///------------------------ R0 contains the fresh physical page number
+			multipop(R1, R2, R3, R4, R5, R6, R13, R14, R15, R12);
+			pageNum = R0;
+
+			[offset]     = R0;     // set the parent page entry's page number for heap as the page num returned after get free page
+			[offset + 1] = "0110"; // set ref bit as 0, valid as 1, write as 1
+		endif;
+
+      ///------------------------ for each valid page which is shared, increment its value in the Memory Free List
+      if (pageNum != -1) then
+         [MEMORY_FREE_LIST + pageNum] = [MEMORY_FREE_LIST + pageNum] + 1;
+      endif;
+	endif;
+
+	[pageTableOffsetChild + counter] = [offset]; // copy for child process
+	counter = counter + 1;
+endwhile;
+
+// FIXME :  Looks like if a parent process doesn't have second code page, child won't have it too, though it will know
+// where to load it from because of DISK map table but later on they will load (demand paging) it on seperate memory pages.
+// Doesn't it defeats the purpose of having shared memory pages for code ?
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------ Copy word by word the contents of the parent user stack to that of the child.
+
+alias stackParFirst R2;
+alias stackParSecond R6;
+
+alias stackChildFirst R7;
+alias stackChildSecond R8;
+
+stackParFirst    = [pageTableOffsetParent + 16] * 512;
+stackParSecond   = [pageTableOffsetParent + 18] * 512;
+
+stackChildFirst  = [pageTableOffsetChild  + 16] * 512;
+stackChildSecond = [pageTableOffsetChild  + 18] * 512;
+
+counter = 0;
+while (counter < PAGE_SIZE) do // copy word by word (512 words in one page)
+	[stackChildFirst + counter]  = [stackParFirst + counter];
+	[stackChildSecond + counter] = [stackParSecond + counter];
+	counter = counter + 1;
+endwhile;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+///------------------------  putting BP register on top of child's kernel stack
+[[childOffsetProc  + 11] * 512] = BP;
+
+alias stack R3;
+alias ptbr R4;
+stack = [childOffsetProc + 13];
+ptbr  = [childOffsetProc + 14];
+
+[[ptbr + 2 * ((stack - 1) / 512)] * 512 + ((stack - 1) % 512)] = 0; // return value 0 for the child process
+
+//return value for parent process
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+exit:
+   alias userSP R2;
+	userSP = [PROCESS_TABLE + systemStatusOffset + 13];                          // get user SP from UPTR
+   [[PTBR + 2 * ((userSP - 1) / 512)] * 512 + ((userSP - 1) % 512)] = childPid; // store the return value for the parent process as childPid
+
+	SP = [PROCESS_TABLE + systemStatusOffset + 13];                              // restore SP from UPTR
+	[PROCESS_TABLE + systemStatusOffset + 9] = 0;                                // Reset the MODE to 0
+	//print("Fork");
+	ireturn;

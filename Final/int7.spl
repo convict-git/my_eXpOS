@@ -1,0 +1,285 @@
+// Write System Call -s
+
+// Arguments    - file descriptor (int) , word to be written
+// Return value -
+//     0    Success
+//    -1    File descp invalid
+//    -2    No disk space / file full
+//    -3    Permission denied
+
+// Description -
+// file descriptor identifies an open instance of file
+// Write operation writes given word to position pointed by FILE POINTER of the file.
+
+// After each write, pointer advances to next word in the file
+
+// ROOT and EXEC files CANNOT be written.
+
+////////////////////////////////////////////////////////////////////////////////
+
+// ------------------------------- set mode flag to system call number (5 here)
+[PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 1] * 16 + 9] = 5;
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP; // store SP in UPTR
+
+// --------------------------------------------------- switch to kernel stack
+alias userSP R1;
+userSP = SP;
+
+SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1; // Initialize kernel stack
+
+// -------------------------------------------------- get arguments from user stack
+alias ret R2;
+alias fileDescriptor R3;
+
+fileDescriptor = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + ((userSP - 4) % 512)]; // first argument is descriptor
+
+alias word R4;
+word = [[PTBR + 2 * ((userSP - 3) / 512)] * 512 + ((userSP - 3) % 512)]; // second argument is filename
+//////////////////////////////////////////////////////////////////////////////////////
+
+//------------------------- if file descriptor == -2 [STDOUT - terminal device]
+
+if (fileDescriptor == -2) then
+
+   // call terminal_write (func 3) function from Device Manager (mod 4)
+
+	multipush(R1, R2, R3, R4);
+
+	R1 = 3;									      // Terminal Write
+	R2 = [SYSTEM_STATUS_TABLE + 1];			// pid
+	R3 = word;								      // word to be printed
+	call MOD_4;
+
+	multipop(R1, R2, R3, R4);
+
+   //------------------------ store ret value in R2 (register) ; will be saved later
+
+	ret = 0;
+
+   //--------------------------------------------------- saves ret val ; user mode
+
+	goto lb2;
+
+//////////////////////////////////////////////////////////////////////////////////////
+
+else
+
+   // ---------------------------------------- if file descriptor invalid , return -1
+   // ------------------------------valid file descp range [0, 7]  ( both inclusive )
+
+	if (fileDescriptor < 0 || fileDescriptor > 7) then
+
+		ret = -1;            // return -1
+		goto lb2;            // saves ret value, switches to user mode
+
+	endif;
+
+   // --------------------- get beginning of per-process resource table of current process
+   // --------------------------- last 16 words of User Area Page is the per-process table
+
+	alias perprocesstable R5;
+	perprocesstable = ([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11]) * 512 + (512 - 16);
+
+
+   // if resource identifier field != FILE for THIS ENTRY (at word 2*fileDescriptor), ret -1
+   // ----------------------------------------------------- again file descriptor is INVALID
+   // ---------------------------------------------- no file is open with this file descptor
+
+	if ([perprocesstable + 2 * fileDescriptor] != FILE) then
+
+		ret = -1;                        // return -1
+		goto lb2;                        // save ret val, user mode
+
+	endif;
+
+   //---------------------------------------------------------------------------------------
+
+	alias filetableindex R6;
+	alias inodetableindex R7;
+
+   // ------------------------ get the open file table index [ from per-proc resource table ]
+
+	filetableindex = [perprocesstable + (2 * fileDescriptor) + 1];
+
+   // ------------------------------------ get the inode table index [ from open file table ]
+
+	inodetableindex = [OPEN_FILE_TABLE + (4 * filetableindex) + 0];
+
+   // ----------------------- If current user NOT ROOT            &&       [kernel has user id 0]
+   // ----------------------- Current user NOT the owner of file  &&
+   // ----------------------- Exclusive permission set            return -3
+
+   // More on file access permissions - https://exposnitc.github.io/os_spec-files/multiuser.html#file_access_permissions
+
+	if (([PROCESS_TABLE + ([SYSTEM_STATUS_TABLE] + 1) * 16 + 3] != 0) && ([INODE_TABLE + 16 * inodetableindex + 3] != [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 3]) && ([INODE_TABLE + 16 * inodetableindex + 4] == EXCLUSIVE)) then
+
+		ret = -3;                     // set return value = -3
+		goto lb2;                     // save ret val, user mode
+
+	endif;
+
+	multipush(R1, R2, R3, R4, R5, R6, R7);
+
+	R1 = 4;                                   // acquire inode
+	R2 = inodetableindex;                     // inode index
+	R3 = [SYSTEM_STATUS_TABLE + 1];           // pid
+	call MOD_0;                               // R0 has return value
+
+	multipop(R1, R2, R3, R4, R5, R6, R7);
+
+   // ----------------------------------- inode acquire failed, return -1
+
+	if (R0 != 0) then
+
+		ret = -1;                            // return -1
+		goto lb2;                            // save ret val, return to user mode
+                                           // NOTE - did not acquire inode, no need to release
+
+	endif;
+
+   //----------------------------- get lseek position from open file table
+
+	alias lseek R8;
+
+	lseek = [OPEN_FILE_TABLE + (4 * filetableindex) + 2];
+
+   // ----------------- if lseek == MAX_FILE_SIZE (file is full / no space !)
+   // ---------------- return -2, release_inode from RESOURCE MANAGER (mod 0)
+
+	if (lseek == MAX_FILE_SIZE) then
+
+		ret = -2;                              // return -2
+		goto lb1;                              // release inode, then lb2
+
+	else
+
+      // if lseek multiple of 512 &&
+      // same as file size in INODE TABLE,      new block to be allocated
+
+		if (lseek % 512 == 0 && [INODE_TABLE + (16 * inodetableindex) + 2] == lseek) then
+
+			multipush(R1, R2, R3, R4, R5, R6, R7, R8);
+
+         // ----------------------- get free block from memory manager (mod 2)
+
+			R1 = 3;                                      // get free block
+			call MOD_2;                                  // free block in R0 / -1
+
+			multipop(R1, R2, R3, R4, R5, R6, R7, R8);
+
+         // ------------------------------------------------------------------
+         // ---------------------------------------- R0 has a free block OR -1
+         // ----------------- write R0 to the (lseek)/512 entry of inode table
+
+			[INODE_TABLE + (16 * inodetableindex) + 8 + (lseek / 512)] = R0;
+
+         // ------------------------------------- R0 == -1, disk full, return -2
+
+			if (R0 == -1) then
+
+				ret = -2;               // return -2
+				goto lb1;               // release inode and then lb2
+
+			endif;
+
+		endif;
+
+      // ------------------------------------------------ block allocation done
+
+      // ----------------------------- find disk block number (from inode table)
+      // --------------------------- position in file to write i/p from (offset)
+
+		R9 = (lseek) / 512;                         // block index in inode table
+		R10 = (lseek) % 512;                                // offset
+
+		R11 = [INODE_TABLE + (16 * inodetableindex) + 8 + R9];
+
+      // 8 added because Data blocks at 8, 9, 10, 11 words in each inode entry
+
+      // ------------- write word to the file (R11 - data block ; R10 - offset)
+      // ------------------- call buffered_write in MOD 3 (file manager module)
+
+		multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11);
+
+		R1 = 1;                                   // buffered write
+		R2 = R11;                                 // disk block number
+		R3 = R10;                                 // offset
+		R4 = word;                                // word
+
+		call MOD_3;
+
+		multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11);
+
+      // ------------------------------------------------- if lseek == FILE_SIZE,
+
+		if (lseek == [INODE_TABLE + 16 * inodetableindex + 2]) then
+
+         // ------------------------------- increase file size in INODE TABLE &&
+
+			[INODE_TABLE + 16 * inodetableindex + 2] = [INODE_TABLE + 16 * inodetableindex + 2] + 1;
+
+         // ------------------------------------------in memory copy of root file
+         // ---------- Every file has the same index in INODE TABLE and ROOT FILE
+         // ----------------------------------- thus, we could use the same index
+
+         // visit - https://exposnitc.github.io/os_design-files/disk_ds.html#root_file
+         // ----------------------------------------------- (check out important note)
+
+			[ROOT_FILE + 8 * inodetableindex + 1] = [ROOT_FILE + 8 * inodetableindex + 1] + 1;
+
+		endif;
+
+      // ---------------------- increment the lseek position in open file table
+
+		[OPEN_FILE_TABLE + 4 * filetableindex + 2] = [OPEN_FILE_TABLE + 4 * filetableindex + 2] + 1;
+
+      // --------------------------------------------------- success - return 0
+
+		ret = 0;
+
+      // -------------------------------------------------------- release inode
+
+		goto lb1;
+
+	endif;
+
+   // --------------------------------------------------------- releases inode
+
+	lb1:
+
+		multipush(R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11);
+
+		R1 = 5;                                               // release inode
+		R2 = inodetableindex;                                 // inode index
+		R3 = [SYSTEM_STATUS_TABLE + 1];                       // pid
+
+		call MOD_0;
+
+		multipop(R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11);
+
+endif;
+
+// ------------------------------------------------ lb2 for saving ret value & switching to user stack
+
+lb2:
+
+   // ------------------------------------------------------------------------ address translation
+
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1)/ 512)] * 512) + ((userSP - 1) % 512);
+
+	[physicalAddrRetVal] = ret;                                                 // save return value
+
+   // ------------------------------------------------------------------------- shift to user stack
+
+	SP = userSP;
+
+   // ------------------------------------------------------------------------ set mode flag to 0
+
+	[PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 1] * 16 + 9] = 0;
+
+   // -------------------------------------------------------------------------- back to user mode
+
+	ireturn;
+
+////////////////////////////////////////////////////////////////////////////////////////////////

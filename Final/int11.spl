@@ -1,0 +1,131 @@
+// # Interrupt 11 - Getpid, Getppid, Wait, Signal -p
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13] = SP; // store the user sp in UPTR
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+alias userSP R1;
+alias ret R2;
+alias SyscallNumber R3;
+
+userSP = SP;
+ret    = 0;
+
+SP            = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 11] * 512 - 1; // initialize kernel stack
+SyscallNumber = [[PTBR + 2 * ((userSP - 5)/ 512)] * 512 + (userSP - 5) % 512];     // get syscall number
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// # Getpid SysCall - function number 11
+
+// Arguments : None
+// ReturnValue : PID
+//------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 11) then				//Getpid
+   ///------------------------ pid of current process to be saved in the return value on kernel stack
+	[[PTBR + 2 * ((userSP - 1)/ 512)] * 512 + (userSP - 1) % 512] = [SYSTEM_STATUS_TABLE + 1];
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // recover userSP
+	ireturn;
+endif;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// # Getppid SysCall - function number 12
+
+// Arguments : None
+// ReturnValue : PPID
+//------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 12) then				//Getppid
+   ///------------------------ third entry in process table contains ppid of the process
+	[[PTBR + 2 * ((userSP - 1)/ 512)] * 512 + (userSP - 1) % 512] = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 2];
+
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // restore the user SP
+	ireturn;
+endif;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// # Wait SysCall - function number 13
+//
+// Arguments : PID of the process to wait for
+// ReturnValue : 0 (Success),  -1 (Given process identifier is invalid or it is the pid of the same process invoking wait)
+
+// Description : The current process is blocked till the process with PID given as argument executes a Signal system call or exits.
+// The system call will fail if a process attempts to wait for itself. The only data structure updated is PROCESS TABLE.
+//------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 13) then				//Wait
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 13; // set MODE = 13
+
+   ///------------------------ third entry in process table contains ppid of the process
+	alias pid R4;
+	pid = [[PTBR + 2 * ((userSP - 4)/ 512)] * 512 + (userSP - 4) % 512]; // first argument is PID of the process for which we have to wait
+
+   ///------------------------ if it is waiting for itself or the process is already TERMINATED or invalid pid
+	if (pid == [SYSTEM_STATUS_TABLE + 1] || [PROCESS_TABLE + (pid * 16) + 4] == TERMINATED || (pid < 0 && pid >= MAX_PROC_NUM)) then
+		ret = -1;				//Error
+	else
+      ///------------------------ STATUS field is 2-tuple (WAIT_PROCESS, pid)
+		[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 4] = WAIT_PROCESS;
+		[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 5] = pid;
+
+      multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+      ///------------------------ call the scheduler
+
+		call MOD_5;
+
+      ///------------------------
+      multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+		ret = 0;
+	endif;
+
+   ///------------------------ store the return value
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal   = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = ret;
+
+   ///------------------------ reset the MODE Flag and restore the user SP
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0;
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13];
+
+	ireturn;
+endif;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// # Signal SysCall - function number 14
+
+// Arguments : None
+// ReturnValue : 0 (Success)
+
+// Description : All processes waiting for the signalling process are resumed. The system call does not fail.
+// The only data structure updated is PROCESS TABLE.
+//------------------------------------------------------------------------------------------------
+
+if (SyscallNumber == 14) then				//Signal
+
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 14; // set the MODE to 14
+
+   ///------------------------ wake up all the processes waiting for the current process
+	alias counter R4;
+	counter = 1;
+
+	while (counter < MAX_PROC_NUM) do
+		if ([PROCESS_TABLE + (counter * 16) + 4] == WAIT_PROCESS && [PROCESS_TABLE + (counter * 16) + 5] == [SYSTEM_STATUS_TABLE + 1]) then
+			[PROCESS_TABLE + (counter * 16) + 4] = READY;
+		endif;
+		counter = counter + 1;
+	endwhile;
+
+   ///------------------------ store the return value (0)
+	alias physicalAddrRetVal R10;
+	physicalAddrRetVal = ([PTBR + 2 * ((userSP - 1) / 512)] * 512) + ((userSP - 1) % 512);
+	[physicalAddrRetVal] = 0;
+
+   ///------------------------ store the return value
+	SP = [PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 13]; // restore SP
+	[PROCESS_TABLE + ([SYSTEM_STATUS_TABLE + 1] * 16) + 9] = 0; // reset the MODE to 0
+
+	ireturn;
+endif;
+//////////////////////////////////////////////////////////////////////////////////////////////////
+

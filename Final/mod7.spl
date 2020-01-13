@@ -1,0 +1,320 @@
+// Boot Module -s
+
+// Creates the INIT and SHELL processes.
+// Loads the modules, interrupt routines and disk data structures from disk to memory
+// Initializes different memory data structures
+
+// Invoked only once by the OS Startup code at the time of booting.
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+
+// ------------------------------------------------ Loading mod, int, disk Data structures
+// -------------------------------------------------------- loadi (pagenumber, blocknumber)
+
+
+
+loadi(40, 53);	        // MOD 0
+loadi(41, 54);
+
+loadi(42, 55);	        // MOD 1
+loadi(43, 56);
+
+loadi(44, 57);	        // MOD 2
+loadi(45, 58);
+
+loadi(46, 59);	        // MOD 3
+loadi(47, 60);
+
+loadi(48, 61);	        // MOD 4
+loadi(49, 62);
+
+loadi(50, 63);	        // MOD 5
+loadi(51, 64);
+
+loadi(52, 65);	        // MOD 6
+loadi(53, 66);
+
+                       // MOD 7 already loaded by os_startup [ this is mod 7 !! ]
+
+loadi(59, 3);	        // inode table & user table
+loadi(60, 4);
+
+loadi(61, 2);	        // disk free list
+
+loadi(62, 5);	        // root file
+
+loadi(65, 7);	        // Init/Login
+loadi(66, 8);
+
+
+////////////////////////////////////////////////////////////////////////////////
+// ------------------------------ all processes have terminated stated initially
+
+alias counter R1;
+counter = 1;
+
+while(counter < MAX_PROC_NUM) do
+
+	[PROCESS_TABLE + (counter*16) + 4] = TERMINATED;            // terminated initially
+	[PROCESS_TABLE + (counter*16)] = 0;					         	// Tick
+
+	counter = counter + 1;
+endwhile;
+
+//----------------------------------------------------------------------------------
+// --------------------------------------------- Initialize the INIT / LOGIN process
+
+PTBR = PAGE_TABLE_BASE + 20;                    // bcoz INIT has pid = 1
+PTLR = 10;                                      // max value
+
+// ------------------------------ Load only first code page of INIT from disk to memory
+// ----------------------------- Library
+
+[PTBR + 0] = 63;
+[PTBR + 1] = "0100";
+
+[PTBR + 2] = 64;
+[PTBR + 3] = "0100";
+
+// ----------------------------- Heap
+
+[PTBR + 4] = -1;
+[PTBR + 5] = "0000";
+
+[PTBR + 6] = -1;
+[PTBR + 7] = "0000";
+
+// ------------------------------ Code [ only 1st page ] ( page 65 ) BOTH Pages
+
+[PTBR + 8] = 65;
+[PTBR + 9] = "0100";
+
+[PTBR + 10] = 66;
+[PTBR + 11] = "0100";
+
+[PTBR + 12] = -1;
+[PTBR + 13] = "0000";
+
+[PTBR + 14] = -1;
+[PTBR + 15] = "0000";
+
+// ------------------------------- Stack [ 1 page stack is enough for INIT ] ( page 66 )
+
+[PTBR + 16] = 78;
+[PTBR + 17] = "0110";
+
+[PTBR + 18] = 79;
+[PTBR + 19] = "0100";
+
+// ------------------------------------------- initialize the process table for INIT
+alias procOffset R4;
+procOffset = PROCESS_TABLE + 16 * 1;
+///------------------------ set all 16 process table entries for INIT
+[procOffset +  0] = 0;                                         // TICK
+[procOffset +  1] = 1;                                  // PID
+[procOffset +  2] = -1;                                    // PPID
+[procOffset +  3] = 1;  // userid (root)
+[procOffset +  4] = CREATED;                                   // State pair.first
+[procOffset +  5] = 0;                                         // state pair.second
+[procOffset +  6] = 0;  // swap flag
+[procOffset +  7] = 0;  // Inode index
+[procOffset +  8] = 0;                                         // Input Buffer
+[procOffset +  9] = 0;                                         // Mode flag
+[procOffset + 10] = 0; // userareaswapstatus
+[procOffset + 11] = 77;                                        // User area page
+[procOffset + 12] = 0;                                         // KTPR
+[procOffset + 13] = 8 * 512; // UPTR
+[procOffset + 14] = PAGE_TABLE_BASE + 20;           // PTBR
+[procOffset + 15] = 10;                                        // PTLR
+
+// ------------------------------------ store IP value from header of INIT to top of its user stack
+[78*512] = [65*512+1];                                      // word 1 of 1st code page (65*512 + 1)
+
+// ------------------------------------------ load the code pages of shell to memory
+//
+//// loadi(67, 9);	                                             // shell
+//// loadi(68, 10);
+//
+//// ---------------------------------------------------- initialize the shell process (pid = 2)
+//
+//// PTBR = PAGE_TABLE_BASE + 40;                              // pid = 2 (20*2)
+//// PTLR = 10;
+//
+//// ----------------------------------------------------------- allocate library pages to shell
+//
+//[PTBR + 0] = 63;
+//[PTBR + 1] = "0100";
+//[PTBR + 2] = 64;
+//[PTBR + 3] = "0100";
+//
+//// -------------------------------------------------------- set heap pages as -1 (invalidate)
+//
+//[PTBR + 4] = -1;
+//[PTBR + 5] = "0000";
+//[PTBR + 6] = -1;
+//[PTBR + 7] = "0000";
+//
+//// ---------------------------------------------------------------- set code pages as 67 , 68 (rest -1)
+//
+//[PTBR + 8] = 67;
+//[PTBR + 9] = "0100";
+//[PTBR + 10] = 68;
+//[PTBR + 11] = "0100";
+//[PTBR + 12] = -1;
+//[PTBR + 13] = "0000";
+//[PTBR + 14] = -1;
+//[PTBR + 15] = "0000";
+//
+//// ------------------------------------------------------------- set 78, 79 for user stack of shell
+//
+//[PTBR + 16] = 78;
+//[PTBR + 17] = "0110";
+//[PTBR + 18] = 79;						            // a process which forks must have 2 stack pages (says int8)
+//[PTBR + 19] = "0110";
+//
+//// -------------------------------------------------------- initialize the process table for shell
+//
+//procOffset = PROCESS_TABLE + 16 * 2;
+//[procOffset +  0] = 0;                                         // TICK
+//[procOffset +  1] = 2;                                  // PID
+//[procOffset +  2] = -1;                                    // PPID
+//[procOffset +  3] = 0;  // userid
+//[procOffset +  4] = TERMINATED;                                   // State pair.first   FIXME - should be TERMINATED in stage26
+//[procOffset +  5] = 0;                                         // state pair.second
+//[procOffset +  6] = 0;  // swap flag
+//[procOffset +  7] = 0;  // Inode index
+//[procOffset +  8] = 0;                                         // Input Buffer
+//[procOffset +  9] = 0;                                         // Mode flag
+//[procOffset + 10] = 0; // userareaswapstatus
+//[procOffset + 11] = 80;                                        // User area page
+//[procOffset + 12] = 0;                                         // KTPR
+//[procOffset + 13] = 8 * 512; // UPTR
+//[procOffset + 14] = PAGE_TABLE_BASE + 20*2;           // PTBR
+//[procOffset + 15] = 10;                                        // PTLR
+//
+//// ------------- store IP val from header (word 1 of 1st code page) to top of user stack of shell
+//[78*512] = [67*512+1];                                  // 67*512 + 1 (where IP val is stored)
+//                                                        // 78*512 (top of user stack of shell)
+
+// initialize disk map table for shell - first two code pages with 9, 10 (disk block numbers)
+// --------------------------------------------------------------------------- others with -1
+
+counter = 0;
+
+// disk map table has 10 words per entry - (DISK_MAP_TABLE + pid*10) gives starting address of DMT for that process
+
+while(counter < 10) do
+	[DISK_MAP_TABLE + 10 + counter] = -1;
+	counter = counter + 1;
+endwhile;
+
+// code pages are in 4, 5, 6, 7 words in a disk map table entry - initialize 4 and 5 with 9, 10 respectively
+
+[DISK_MAP_TABLE + 10 + 4] = 7;
+[DISK_MAP_TABLE + 10 + 5] = 8;
+
+// --------------- ALL Processes except IDLE, INIT, SHELL already given TERMINATED status (check out line 110)
+
+// ----- set status field of DISK_STATUS_TABLE and TERMINAL_STATUS_TABLE to 0 (word 0 is status field in BOTH)
+
+[TERMINAL_STATUS_TABLE + 0] = 0;                                      // terminal free
+[DISK_STATUS_TABLE + 0] = 0;				                               // disk free
+
+// ------------------------------------------------------------------------------------- initialize MEMORY_FREE_LIST
+// ------------------------------------------------------------------------------ [ from 0 - 80 : allocated : set 1]
+
+counter = 0;
+while (counter < 81) do
+	[MEMORY_FREE_LIST + counter] = 1;
+	counter = counter + 1;
+endwhile;
+
+// ------------------------------------------------------------------------------ [ from 81 - 127 (NUM_MEM_PAGES- 1) : set 0 ]
+
+while (counter < NUM_MEM_PAGES) do
+	[MEMORY_FREE_LIST + counter] = 0;
+	counter = counter + 1;
+endwhile;
+
+// ---------------------------------------------------------------- intialize system status table fields
+// System Status Table (8 words )
+// CURRENT_USER_ID 	CURRENT_PID 	MEM_FREE_COUNT 	WAIT_MEM_COUNT 	SWAPPED_COUNT 	PAGING_STATUS CURRENT_PID2 LOGOUT
+// NOTE - last 2 words useless for now
+
+// ---------------------------- from 81 - 127 (47 pages) [ from 76, being used as userAreaPage or code/stack/heap ]
+
+[SYSTEM_STATUS_TABLE + 0] = 0;    // FIXME - get this shit clear
+[SYSTEM_STATUS_TABLE + 1] = 0;   // call idle initially
+[SYSTEM_STATUS_TABLE + 2] = 45;
+[SYSTEM_STATUS_TABLE + 3] = 0;                                       // no process waiting for memory NOTE- why -1 earlier?
+[SYSTEM_STATUS_TABLE + 4] = 0;                                       // swapped count = 0 initially
+[SYSTEM_STATUS_TABLE + 5] = 0;                                       // paging not implemented ( hence 0 )
+
+// ---------------------------- invalidate per-process resource table entries of INIT ( set all 16 words to -1)
+// --------------------------- invalidate per-process resource table entries of SHELL ( set all 16 words to -1)
+alias pptableLogin R2;
+// alias pptableShell R5;
+alias offset R6;
+
+pptableLogin = ([PROCESS_TABLE + 16 + 11] + 1) * 512 - 16;		// user area page of INIT is 77 ; last 16 words needed
+// pptableShell = ([PROCESS_TABLE + 32 + 11] + 1) * 512 - 16;		// user area page of SHELL is 80 ; last 16 words needed
+counter = 0;
+
+while (counter < 16) do
+	[pptableLogin + counter] = -1;
+	// [pptableShell + counter] = -1;
+	counter = counter + 1;
+endwhile;
+
+// ------------------------------- store 0 in the PROCESS_COUNT field for all entries in Semaphore Table
+// ---------------- Each semaphore entry has 4 word (last 2 unused) (total entries = MAX_SEM_COUNT = 32)
+// LOCKING PID | 	PROCESS COUNT 	| unused
+
+counter = 0;
+while (counter < MAX_SEM_COUNT) do					// semaphore table
+	[SEMAPHORE_TABLE + 4 * counter] = -1;        // -1 as not locked by ANY process
+	[SEMAPHORE_TABLE + 4 * counter + 1] = 0;     // hence process_count = 0
+	counter = counter + 1;
+endwhile;
+
+// Initialize BLOCK NUMBER to -1, DIRTY BIT to 0 and LOCKING PID to -1 for the four buffer pages in the Buffer table.
+// --------------------------------------- Each buffer table has 4 entries (total number of entries = MAX_BUFFER = 4)
+// BLOCK NUMBER   | 	DIRTY BIT  | 	LOCKING PID   |   Unused
+
+counter = 0;
+alias temp R3;
+
+while (counter < MAX_BUFFER) do									// buffer table has 4 entries
+	temp = BUFFER_TABLE + 4 * counter;
+	[temp] = -1;                                          // no block number
+	[temp + 1] = 0;                                       // not dirty bit
+	[temp + 2] = -1;                                      // no locking pid
+	counter = counter + 1;
+endwhile;
+
+// ------------------------- set FILE OPEN COUNT and LOCKING PID to -1 for all entries in the File Status Table
+// Each entry consists of 4 words (total number of entries - MAX_FILE_NUM = 60) -------------------------------
+// LOCKING PID  |  FILE OPEN COUNT  |	Unused (2)
+
+counter = 0;
+
+while (counter < MAX_FILE_NUM) do									// file status table
+	temp = FILE_STATUS_TABLE + counter * 4;
+	[temp + 0] = -1;                                         // no locking pid
+	[temp + 1] = -1;                                         // no file opened
+	counter = counter + 1;
+endwhile;
+
+// Set the INODE INDEX to -1 in the Open File Table for all entries.
+// Each entry in open file table has 4 words (total num = MAX_OPENFILE_NUM = 32)
+// INODE INDEX    |   OPEN INSTANCE COUNT  | 	LSEEK 	|    Unused
+
+counter = 0;
+
+while (counter < MAX_OPENFILE_NUM) do
+	temp = OPEN_FILE_TABLE + 4 * counter;
+	[temp + 0] = -1;                                         // inode index to -1
+	[temp + 1] = 0;                                          // 0 open instances
+	counter = counter + 1;
+endwhile;
+return;

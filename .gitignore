@@ -1,0 +1,5 @@
+*.xsm
+/xfs-interface
+/spl
+/spl_progs
+/todo

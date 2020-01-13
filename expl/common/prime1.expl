@@ -1,0 +1,27 @@
+int main ()
+{
+			decl
+					int temp, p, j, isPrime;
+			enddecl
+			begin
+					temp = exposcall( "Write", -2, "2");
+					p = 3;
+					while ( p <= 100 ) do
+								j = 2;
+								isPrime = 1;
+								while (j < p) do
+										if ((p % j) == 0) then
+											isPrime = 0;
+											break;
+										endif;
+										j = j + 1;
+								endwhile;
+								if (isPrime == 1) then
+										temp = exposcall( "Write", -2, p);
+								endif;
+								p = p + 1;
+					endwhile;
+					return 0;
+			end
+}
+

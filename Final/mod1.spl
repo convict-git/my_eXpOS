@@ -1,0 +1,386 @@
+// breakpoint;
+// print("MOD1");
+// # Module 1 - Process Manager -p
+//
+// Description : This module contains functions that manage the different aspects related to processes.
+//
+//---------------------------------------------------------------------------------
+//# Function Number         | Function Name       | Arguments |  ReturnValue      |
+//---------------------------------------------------------------------------------
+// GET_PCB_ENTRY = 1       | Get Pcb Entry       | NIL       | Index of Free PCB. |
+// FREE_USER_AREA_PAGE = 2 | Free User Area Page | PID       |	NIL                |
+// EXIT_PROCESS = 3        | Exit Process        | PID       | NIL                |
+// FREE_PAGE_TABLE = 4     | Free Page Table     | PID       | NIL                |
+// KILL_ALL = 5            | Kill All            | PID       | NIL                |
+//---------------------------------------------------------------------------------
+////////////////////////////////////////////////////////////////////////////////
+
+alias ret         R0; // Return value to be stored in R0
+alias functionNum R1; // Function number stored in R1
+alias pid         R2; // PID in R2
+
+////////////////////////////////////////////////////////////////////////////////
+// # Get PCB Entry - Function Number 1
+
+// Description : Returns a Free PCB index. Returns -1 if PCB is full.
+// CalledBy    : Fork system call.
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 1) then		//Get pcb entry
+   //print("getPCB");
+	alias counterpid R3;
+	counterpid = 1;
+
+   ///------------------------ find the entry in process table which can be allocated to the new process
+	while (counterpid < MAX_PROC_NUM) do
+		if ([PROCESS_TABLE + (counterpid * 16) + 4] == TERMINATED) then // check STATE of process for TERMINATED
+
+			[PROCESS_TABLE + (counterpid * 16) + 1]  = counterpid;                        // PID
+			[PROCESS_TABLE + (counterpid * 16) + 4]  = ALLOCATED;                         // STATE as ALLOCATED
+			[PROCESS_TABLE + (counterpid * 16) + 14] = PAGE_TABLE_BASE + 20 * counterpid; // PTBR
+			[PROCESS_TABLE + (counterpid * 16) + 15] = 10;                                // PTLR
+
+			ret = counterpid;		//return value
+			return;
+		endif;
+      ///------------------------
+		counterpid = counterpid + 1;
+	endwhile;
+
+	ret = -1; // return -1 if PCB is full, hence NO new process can be allocated
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Free User Area Page - Function Number 2
+
+// Description  : Frees all the resources in the Resource Table inside the User Area page. Also frees the User Area page.
+// NOTE         : The function should be called only when no file/buffer/terminal resource is locked by the process.
+// CalledBy     : Fork system call.
+
+// NOTE : The user area page holding the return address for the call to free_user_area_page()
+// has been released! Neverthless the return address and the saved context of the calling process
+// will not be lost. This is because release_page() is non blocking and hence the page will never be
+// allocated to another process before control transfers back to the caller.  The calling function
+// gets "time" to either invoke the scheduler using the same stack page or to reallocate the same page
+// again for a different purpose.
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 2) then		//Free User Area Page
+   //print("FreeUserAreaPg");
+	alias userPageArea    R3;
+	alias perProcessTable R4;
+	alias counter         R5;
+
+	userPageArea    = [PROCESS_TABLE + (pid * 16) + 11];
+	perProcessTable = userPageArea * 512 + (512 - 16); // last 16 words of USER PAGE AREA is perProcTab
+	counter         = 0;
+
+   ///------------------------ loop through the Resource table to find valid entries
+   // NOTE : The Per-Process Resource Table has 8 entries and each entry is of 2 words.
+   // each entry is,  Resource Identifier (1 word) + Index of Open File Table/ Semaphore Table entry (1 word)
+
+	while (counter < 16) do
+      ///------------------------ if found a semaphore than release it
+      if([perProcessTable + counter] == SEMAPHORE) then
+          multipush(R1, R2, R3, R4, R5);
+
+          R1 = 7;                               // function number 7 in MOD 0 (Resoure Manager) is # Release Semaphore
+          R3 = R2;                              // PID
+          R2 = [perProcessTable + counter + 1]; // semaphore index (index of semaphore table entry)
+
+          call MOD_0;                           // (# Resouce Manager)
+
+          multipop(R1, R2, R3, R4, R5);
+		endif;
+
+      ///------------------------ if found a file than close it
+		if([perProcessTable + counter] == FILE) then
+         multipush(R1, R2, R3, R4, R5);
+
+			R1 = 4;                               // function Number 3 in MOD 3 (File manager module) to call # Close()
+			R2 = [perProcessTable + counter + 1]; // file id (index of open file table)
+
+			call MOD_3;                           // (# File manager Module)
+
+         multipop(R1, R2, R3, R4, R5);
+		endif;
+
+      ///------------------------ increment by 2
+		counter = counter + 2;
+	endwhile;
+
+   ///------------------------ now since we have released all resources in user page area we can release the page safely
+   R1 = 2;            // function number 2 in memory manager (MOD 2) to call #release Page
+	R2 = userPageArea; // page number to be released
+
+   //print("InFreeUAp");
+   //print(R2);
+   // breakpoint;
+	call MOD_2;        // (# Memory manager Module)
+   //print("OutFreeUAPg");
+   breakpoint;
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Exit Process - Function Number 3
+
+// Description : Terminate the process whose PID is provided.
+// NOTE        : The function should be called only when no file/terminal/disk/buffer resource is locked by the process.
+// CalledBy    : exec system call, exit system call, exception handler, shutdown and logout.
+
+//------------------------------------------------------------------------------------------------
+if (functionNum == 3) then			//Exit
+   //print("ExitProc");
+	alias fileindex R4;
+
+   ///------------------------ if current is not in the exec system call
+   // i.e. it should be coming from exit system call, exception handler, shutdown and logout
+	if ([PROCESS_TABLE + (pid * 16) + 9] != 9) then
+		alias counter R5;
+		counter = 1;
+
+		while (counter < MAX_PROC_NUM) do
+         ///------------------------ if a process is waiting for the current process, set it to ready
+			if ([PROCESS_TABLE + (counter * 16) + 4] == WAIT_PROCESS && [PROCESS_TABLE + (counter * 16) + 5] == [SYSTEM_STATUS_TABLE + 1]) then
+				[PROCESS_TABLE + (counter * 16) + 4] = READY; // set ready
+			endif;
+
+         ///------------------------ if a process is child of the current process then set its parent as -1 (make it orphan)
+			if ([PROCESS_TABLE + (counter * 16) + 2] == [SYSTEM_STATUS_TABLE + 1]) then
+				[PROCESS_TABLE + (counter * 16) + 2] = -1;
+			endif;
+
+			counter = counter + 1;
+		endwhile;
+
+      // FIXME : This is unclear why it is here! IT's not in algo
+      // The swap in is called after checking  mem_free_count is > MEM_HIGH
+// 		if ([SYSTEM_STATUS_TABLE + 2] > MEM_HIGH) then
+//          multipush(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+//
+//          R1 = 2;
+//          R2 = [SYSTEM_STATUS_TABLE + 1];
+//
+//          call MOD_6;
+//
+//          multipop(R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15);
+// 		endif;
+   ///------------------------
+	endif;
+
+   ///------------------------ Free the Page Table entry corresponding to the process
+   multipush(R1, R2, R3, R4, R5);
+
+   R1 = 4;     // Function number 4 in MOD 1 is # Free Page Table
+	R2 = pid;   // PID
+   call MOD_1; // # (Process Manager)
+
+   multipop(R1, R2, R3, R4, R5);
+
+   ///------------------------ Free the Page Table entry corresponding to the process
+   multipush(R1, R2, R3, R4, R5);
+
+   R1 = 2;     // Function Number 2 in MOD 1 is # Free User Area page
+   R2 = pid;   // PID
+   call MOD_1; // # (Process Manager)
+
+   multipop(R1, R2, R3, R4, R5);
+
+//    ///------------------------ FIXME : Not sure why it is here !
+// 	//if ([PROCESS_TABLE + (pid * 16) + 2] != 2) then
+ // 		fileindex = [PROCESS_TABLE + (pid * 16) + 7];
+// 		if (fileindex > 0 && fileindex < 60) then
+// 		multipush(R1,R2,R3,R4);
+// 		R1 = 4;											//acquire inode
+// 		R3 = pid;
+// 		R2 = (fileindex);
+// 		//R3 = [SYSTEM_STATUS_TABLE + 1];
+// 		call MOD_0;
+// 		multipop(R1,R2,R3,R4);
+// 		alias t R13;
+// 		t = FILE_STATUS_TABLE + 4*fileindex + 1;
+// 		[t] = [t] - 1;
+// 		if ([t] == 0) then
+// 			[t] = -1;
+// 		endif;
+// 		multipush(R1,R2,R3,R4);
+// 		R1 = 5;											//release inode
+// 		R3 = pid;
+// 		R2 = fileindex;
+// 		//R3 = [SYSTEM_STATUS_TABLE + 1];
+// 		call MOD_0;
+// 		multipop(R1,R2,R3,R4);
+// 		endif;
+// 	//endif;
+
+
+   ///------------------------ set the state as TERMINATED
+	[PROCESS_TABLE + (pid * 16) + 4] = TERMINATED;
+	return;
+
+  //  NOTE : After the User Area Page has been deallocated, the process is executing without a kernel stack.
+  // Hence the process should immmediately be scehduled out
+  // that the return statement is executing using a deallocated stack page
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Free Page Table - Function Number 4
+
+// Description : Free the page table entry and the used pages. The Disk Map table entries are also freed.
+// CalledBy : the exit_process function.
+//------------------------------------------------------------------------------------------------
+
+if (functionNum == 4) then			//Free Page Table
+   //print("FreePageTable");
+	alias ptbr R3;
+	alias ptlr R4;
+	alias counter R5;
+
+	ptbr = [PROCESS_TABLE + (pid * 16) + 14]; // PTBR
+	ptlr = [PROCESS_TABLE + (pid * 16) + 15]; // PTLR
+	counter = 0;
+
+   // NOTE on PAGE_TABLE :
+   // There are MAX_PROC_PAGES = 10 entries, each entry is 2 words
+   // 10 entries for => Shared Library(2) + Heap(2) + Code(4) + Stack(2)
+   // Each entry of 2 words : physicalPageNum (1) + {Ref Bit, Valid Bit, Write Bit} (1)
+   // 2 * counter     -> physicalPageNum
+   // 2 * counter + 1 -> ref, valid, write bits
+   ///------------------------
+	while (counter < ptlr) do
+      ///------------------------ if entry is valid
+		if ([ptbr + 2 * counter] != -1) then
+         multipush(R1, R2, R3, R4, R5);
+
+			R1 = 2;                    // function number 2 in MOD 2 is # Release page
+			R2 = [ptbr + 2 * counter]; // physicalPage Number
+
+			call MOD_2;                // (# Memory manager module)
+
+         multipop(R1, R2, R3, R4, R5);
+		endif;
+
+      ///------------------------ invalidate the page table entry
+		[ptbr + 2 * counter]     = -1;
+		[ptbr + 2 * counter + 1] = "0000";
+
+		counter = counter + 1;
+	endwhile;
+
+   ///------------------------ invalidate all the entries in disk map table and call release block for valid stack and heap entries
+   // NOTE : The Disk Map Table has 10 entries for a single process
+   // When the memory pages of a process are swapped out into the disk, the corresponding disk block
+   // numbers of those pages are stored in this table. It also stores block numbers of the code pages of the process.
+
+   // The entry in the disk map table entry has the following format: (10 words)
+   // Unused(1) + Unused(1) +	Heap 1 in disk(1)	+ Heap 2 in disk(1)	+ Code 1 in disk(1) + Code 2 in disk(1)
+   // + Code 3 in disk(1) + Code 4 in disk(1) + Stack Page 1 in disk(1)	+ Stack Page 2 in disk(1)
+
+	counter = 0;
+
+	while(counter < 10) do
+      ///------------------------ if (the entry is valid and is stack or heap) release the block
+		if (counter == 2 || counter == 3 || counter == 8 || counter == 9) then // Heap (2, 3) and Stack (8, 9) (see NOTE above)
+			if ([DISK_MAP_TABLE + pid * 10 + counter] != -1) then               // is valid
+           multipush(R1, R2, R3, R4, R5);
+           ///------------------------ call release block
+
+           R1 = 4;                                     // function number 4 in MOD 2 is # Release Block
+           R3 = R2;                                    // PID
+           R2 = [DISK_MAP_TABLE + pid * 10 + counter]; // block number to be released
+
+           call MOD_2;                                 // (# Memory Manager Module)
+           ///------------------------
+
+           multipop(R1, R2, R3, R4, R5);
+			endif;
+		endif;
+
+		[DISK_MAP_TABLE + pid * 10 + counter] = -1; // set invalid
+		counter = counter + 1;
+	endwhile;
+
+	return;
+endif;
+
+////////////////////////////////////////////////////////////////////////////////
+// # Kill All - Function Number 5
+
+// Description : Kills all the processes except the current process, idle and init/login*.
+// CalledBy    : Shutdown and logout system call.
+//------------------------------------------------------------------------------------------------
+if (functionNum == 5) then			// Kill all
+   //print("KillAll");
+	alias counter R4;
+	counter = 0;
+
+   ///------------------------ Lock all files to ensure that no processes are in the middle of a file operation
+   // NOTE 1 : MAX_FILE_NUM = 60, MAX_FILE_BLOCKS = 4 (maximum number of blocks in an eXpFS file)
+   // 60 entries in INODE TABLE, each represents files that could be loaded in disk,
+
+   // Each Inode table entry consists of 16 words
+   // FILE TYPE (1) + FILE NAME (1) + FILE SIZE (1) + USER ID (1) + PERMISSION (1) +  Unused (3) + DATA BLOCK 1 to 4 (4) + Unused (4)
+
+   // NOTE 2 : A Free inode entry is denoted by -1 in the FILENAME field.
+
+	while (counter < MAX_FILE_NUM) do
+      ///------------------------ for each valid entry in INODE Table call acquire Inode to lock the file
+		if ([INODE_TABLE + 16 * counter + 1] != -1) then // Check if inode entry is valid (See NOTE 2 above if confused why -1)
+        multipush(R1, R2, R3, R4, R5);
+         ///------------------------ call the acquire Inode (which is blocking)
+
+			R1 = 4;       // Function number 4 in MOD 0 is # Acquire Inode
+			R3 = pid;     // PID
+			R2 = counter; // inode index (Inode table entry of file ID global)
+
+			call MOD_0; // # (Resource Manager)
+
+         ///------------------------
+         multipop(R1, R2, R3, R4, R5);
+		endif;
+		counter = counter + 1;
+	endwhile;
+
+   ///------------------------ for all process except this process itself call exit process
+
+	counter = 2;						// PID 0 for idle and 1 for INIT (login) so start from 2nd
+	while (counter < MAX_PROC_NUM) do
+     ///------------------------ not the current process itself and is not terminated (check from STATUS)
+     if (pid != counter && [PROCESS_TABLE + (16 * pid) + 4] != TERMINATED) then
+         multipush(R1, R2, R3, R4, R5);
+         ///------------------------ call exit process
+
+			R1 = 3;       // Function number 3 in MOD 1 is # Exit process
+			R2 = counter; // PID
+			call MOD_1;   // # (Process Manager)
+
+         multipop(R1, R2, R3, R4, R5);
+		endif;
+		counter = counter + 1;
+	endwhile;
+
+   ///------------------------ for each valid entry in inode table call release inode to unlock the files
+
+	counter = 0;
+   while (counter < MAX_FILE_NUM) do
+      if ([INODE_TABLE + (16 * counter) + 1] != -1) then // Check if inode entry is valid (See NOTE 2 above if confused why -1)
+         multipush(R1, R2, R3, R4, R5);
+         ///------------------------
+
+         R1 = 5;       // Function number 5 in MOD 0 is # Release Inode
+			R3 = pid;     // PID
+			R2 = counter; // inode entry (inode index)
+
+         call MOD_0;   // # (Resource Manager)
+
+         multipop(R1, R2, R3, R4, R5);
+		endif;
+		counter = counter + 1;
+	endwhile;
+
+   ///------------------------
+	return;
+endif;
+////////////////////////////////////////////////////////////////////////////////
